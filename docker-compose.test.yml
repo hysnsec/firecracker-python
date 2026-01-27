@@ -1,0 +1,52 @@
+services:
+  firecracker-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: firecracker-python-test
+    hostname: firecracker-test
+    privileged: true
+    # Required for KVM access
+    devices:
+      - /dev/kvm:/dev/kvm
+      - /dev/net/tun:/dev/net/tun
+    # Required for Docker-in-Docker (for Docker image tests)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker:/var/lib/docker
+      # Mount project directory for development
+      - .:/workspace
+      # Persist Firecracker data
+      - firecracker-data:/var/lib/firecracker
+      - firecracker-snapshots:/var/lib/firecracker/snapshots
+      # Preserve uv cache
+      - uv-cache:/root/.local/share/uv
+    # Network configuration - use bridge mode instead of host
+    networks:
+      - firecracker-net
+    # Add extra hosts for networking if needed
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Environment variables
+    environment:
+      - PYTHONUNBUFFERED=1
+      - UV_CACHE_DIR=/root/.local/share/uv
+    # Working directory
+    working_dir: /workspace
+    # Keep container running
+    stdin_open: true
+    tty: true
+    # Command to run when container starts
+    command: /bin/bash
+
+volumes:
+  firecracker-data:
+    driver: local
+  firecracker-snapshots:
+    driver: local
+  uv-cache:
+    driver: local
+
+networks:
+  firecracker-net:
+    driver: bridge
