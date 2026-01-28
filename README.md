@@ -7,7 +7,7 @@
 <a href="https://github.com/myugan/firecracker-python"><img src="https://img.shields.io/github/watchers/myugan/firecracker-python.svg?style=social&label=Watch"></a>
 </p>
 
-![Firecracker](img/firecracker.png)
+![Firecracker](assets/img/firecracker.png)
 
 **firecracker-python** is a simple Python library that makes it easy to manage Firecracker microVMs. It provides a simple way to create, configure, and manage microVMs.
 
@@ -37,6 +37,11 @@ Or install from source, by cloning the repository and installing the package usi
 ```bash
 git clone https://github.com/myugan/firecracker-python.git
 cd firecracker-python
+
+# Using uv (recommended)
+uv sync --dev
+
+# Or using pip
 python3 -m venv venv
 source venv/bin/activate
 pip3 install -r requirements.txt
@@ -53,6 +58,60 @@ pip3 install -e .
 - Set up port forwarding in microVMs
 
 ### Getting Started
+
+The easiest way to get started is to use the official Firecracker setup script:
+
+```bash
+# Run the official setup script (downloads official CI kernel and rootfs)
+./assets/rootfs/setup-firecracker-official.sh
+
+# Then run the sample script
+./examples/sample.py
+```
+
+This will:
+1. Download the latest Firecracker kernel from official CI (tested with Ubuntu)
+2. Download the official Ubuntu rootfs from Firecracker CI
+3. Set up SSH keys for root access
+4. Create a properly configured ext4 rootfs image
+
+The official setup uses Firecracker's CI kernel and rootfs which are **proven to work together**, avoiding kernel compatibility issues.
+
+**Manual Setup (Alternative):**
+
+If you prefer to build your own rootfs, see [`FIRECRACKER_SETUP.md`](FIRECRACKER_SETUP.md) for detailed instructions.
+
+#### Prerequisites
+
+Before running the setup script, ensure you have:
+
+- **Firecracker binary** installed at `/usr/local/bin/firecracker` or `/usr/bin/firecracker`
+- **KVM** enabled on your system: `lsmod | grep kvm`
+- **Docker** installed and running (for rootfs setup)
+- **Python 3.9+** installed
+
+#### Enable IP Forwarding
+
+To enable networking for Firecracker VMs, run:
+
+```bash
+sudo sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
+sudo iptables -P FORWARD ACCEPT
+```
+
+#### Quick Start Example
+
+```bash
+# Activate virtual environment and run sample
+source .venv/bin/activate
+./examples/sample.py
+```
+
+The sample script includes:
+- Automatic IP conflict detection
+- VM creation with verified files
+- SSH connection capability
+- Cleanup instructions
 
 To get started with **firecracker-python**, check out the [getting started guide](docs/getting-started.md)
 

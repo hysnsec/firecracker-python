@@ -172,3 +172,18 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# SSH keys
+ssh_keys/
+
+# Generated/downloaded Firecracker files (kernel, rootfs images)
+firecracker-files/
+
+# Backup files
+*.bak
+*.old
+*.backup
+
+# Large downloaded files in project root
+*.squashfs*
+vmlinux-*

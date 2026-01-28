@@ -9,16 +9,12 @@ description = "A Python client library to interact with Firecracker microVMs"
 authors = [
     {name = "Muhammad Yuga Nugraha"}
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
-    "docker==7.1.0",
-    "requests==2.32.3",
-    "requests-unixsocket==0.4.1",
-    "tenacity==9.0.0",
-    "psutil==7.0.0",
+"docker==7.1.0",
     "pyroute2==0.8.1",
     "paramiko==3.5.1",
-    "faker==37.0.2"
+    "faker==37.9.0",
 ]
 license = {file = "LICENSE"}
 readme = "README.md"
@@ -44,4 +40,19 @@ omit = [
     "firecracker/_version.py",
     "tests/conftest.py",
     "tests/test_microvm.py"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers --maxfail=1000"
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')"
+]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.0.0",
 ]

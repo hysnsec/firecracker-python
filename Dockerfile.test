@@ -1,0 +1,96 @@
+# Dockerfile for running firecracker-python unit tests with KVM access
+FROM ubuntu:24.04
+
+LABEL maintainer="firecracker-python"
+LABEL description="Test environment for firecracker-python with KVM support"
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Install system dependencies
+RUN apt-get update -q && apt-get install -y \
+    # Python and build tools
+    python3 \
+    python3-pip \
+    python3-venv \
+    python3-dev \
+    build-essential \
+    curl \
+    wget \
+    git \
+    # KVM and virtualization dependencies
+    qemu-kvm \
+    libvirt-daemon-system \
+    libvirt-clients \
+    bridge-utils \
+    virtinst \
+    virt-manager \
+    # Network and system tools
+    iproute2 \
+    net-tools \
+    iputils-ping \
+    openssh-server \
+    ca-certificates \
+    gpg \
+    lsb-release \
+    kmod \
+    init \
+    file \
+    dnsutils \
+    vim \
+    nano \
+    python3-nftables \
+    # Docker (for Docker image tests)
+    docker.io \
+    docker-compose \
+    # Firecracker dependencies
+    make \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for Python package management
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install Firecracker
+RUN mkdir -p /var/lib/firecracker \
+    && wget -qO /tmp/firecracker-v1.14.1-x86_64.tgz \
+    https://github.com/firecracker-microvm/firecracker/releases/download/v1.14.1/firecracker-v1.14.1-x86_64.tgz \
+    && tar -xzf /tmp/firecracker-v1.14.1-x86_64.tgz -C /tmp \
+    && mv /tmp/release-v1.14.1-x86_64/firecracker-v1.14.1-x86_64 /usr/local/bin/firecracker \
+    && chmod +x /usr/local/bin/firecracker \
+    && rm -rf /tmp/firecracker-v1.14.1-x86_64.tgz /tmp/release-v1.14.1-x86_64
+
+# Create directories for Firecracker
+RUN mkdir -p /var/lib/firecracker \
+    /var/lib/firecracker/snapshots \
+    /var/run/firecracker
+
+# Create a non-root user for running tests (optional)
+# RUN useradd -m -s /bin/bash testuser
+# RUN echo "testuser:testuser" | chpasswd
+# RUN usermod -aG kvm testuser
+# RUN usermod -aG docker testuser
+
+# Set up work directory
+WORKDIR /workspace
+
+# Copy project files
+COPY . /workspace/
+
+# Install Python dependencies using uv
+RUN uv sync --dev
+
+# Create test kernel and rootfs placeholders (for testing purposes)
+# Note: In a real scenario, you would mount actual kernel and rootfs files
+RUN touch /var/lib/firecracker/vmlinux-6.1.0 \
+    && touch /var/lib/firecracker/devsecops-box.img
+
+# Set permissions for KVM device
+RUN chmod 666 /dev/kvm 2>/dev/null || true
+
+# Expose ports for testing
+EXPOSE 22 80 443 8080
+
+# Default command
+CMD ["/bin/bash"]
