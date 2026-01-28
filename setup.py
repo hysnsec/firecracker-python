@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 from setuptools import setup
 
 setup(
-    name="firecracker-python",
+    name="hysn-firecracker-python",
     description="A Python client library to interact with Firecracker microVMs",
     author="Muhammad Yuga Nugraha",
     packages=find_packages(),
