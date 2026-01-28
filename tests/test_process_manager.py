@@ -71,7 +71,8 @@ class TestProcessManager:
                         mock_popen.return_value = mock_process
 
                         with pytest.raises(
-                            ProcessError, match="Firecracker process exited during startup"
+                            ProcessError,
+                            match="Firecracker process exited during startup",
                         ):
                             manager.start(vmm_id, ["test"])
 
@@ -127,7 +128,8 @@ class TestProcessManager:
                             mock_psutil.return_value = mock_proc
 
                             with pytest.raises(
-                                ProcessError, match="Firecracker process disappeared during startup"
+                                ProcessError,
+                                match="Firecracker process disappeared during startup",
                             ):
                                 manager.start(vmm_id, ["test"])
 
@@ -177,9 +179,13 @@ class TestProcessManager:
 
             with patch.object(manager._config, "data_path", tmpdir):
                 with patch.object(
-                    manager, "_try_stop_process", side_effect=[ProcessError("Not found"), True]
+                    manager,
+                    "_try_stop_process",
+                    side_effect=[ProcessError("Not found"), True],
                 ):
-                    with patch.object(manager, "_find_running_process", return_value=54321):
+                    with patch.object(
+                        manager, "_find_running_process", return_value=54321
+                    ):
                         with patch.object(manager, "_cleanup_files"):
                             result = manager.stop(vmm_id)
                             assert result is True
@@ -290,7 +296,8 @@ class TestProcessManager:
 
                     with patch("os.remove") as mock_remove:
                         with pytest.raises(
-                            ProcessError, match="Firecracker process 12345 is not running"
+                            ProcessError,
+                            match="Firecracker process 12345 is not running",
                         ):
                             manager.get_pid(vmm_id)
                         mock_remove.assert_called()
@@ -317,30 +324,37 @@ class TestProcessManager:
 
                     with patch("os.remove") as mock_remove:
                         with pytest.raises(
-                            ProcessError, match="Process 12345 is not a Firecracker process"
+                            ProcessError,
+                            match="Process 12345 is not a Firecracker process",
                         ):
                             manager.get_pid(vmm_id)
                         mock_remove.assert_called()
 
     def test_get_pids(self):
-        """Test getting all Firecracker PIDs."""
+        """Test getting Firecracker process PIDs."""
         manager = ProcessManager()
 
-        with patch("psutil.process_iter") as mock_iter:
-            mock_proc1 = MagicMock()
-            mock_proc1.info = {
-                "pid": 12345,
-                "name": "firecracker",
-                "cmdline": ["firecracker", "--api-sock", "/tmp/socket"],
-            }
-            mock_proc2 = MagicMock()
-            mock_proc2.info = {"pid": 67890, "name": "other", "cmdline": ["other"]}
+        with patch("psutil.pids") as mock_pids:
+            mock_pids.return_value = [12345, 67890]
 
-            mock_iter.return_value = [mock_proc1, mock_proc2]
+            with patch("psutil.Process") as MockProcess:
+                mock_proc1 = MagicMock()
+                mock_proc1.name.return_value = "firecracker"
+                mock_proc1.cmdline.return_value = [
+                    "firecracker",
+                    "--api-sock",
+                    "/tmp/socket",
+                ]
 
-            pids = manager.get_pids()
-            assert 12345 in pids
-            assert 67890 not in pids
+                mock_proc2 = MagicMock()
+                mock_proc2.name.return_value = "other"
+                mock_proc2.cmdline.return_value = ["other"]
+
+                MockProcess.side_effect = [mock_proc1, mock_proc2]
+
+                pids = manager.get_pids()
+                assert 12345 in pids
+                assert 67890 not in pids
 
     def test_get_pids_no_api_sock(self):
         """Test getting PIDs excludes Firecracker processes without --api-sock."""
@@ -348,7 +362,11 @@ class TestProcessManager:
 
         with patch("psutil.process_iter") as mock_iter:
             mock_proc = MagicMock()
-            mock_proc.info = {"pid": 12345, "name": "firecracker", "cmdline": ["firecracker"]}
+            mock_proc.info = {
+                "pid": 12345,
+                "name": "firecracker",
+                "cmdline": ["firecracker"],
+            }
 
             mock_iter.return_value = [mock_proc]
 
@@ -369,7 +387,9 @@ class TestProcessManager:
 
         with patch("os.kill", return_value=None):
             with patch("time.sleep"):
-                with patch("os.kill", side_effect=[None, OSError(3, "No such process")]):
+                with patch(
+                    "os.kill", side_effect=[None, OSError(3, "No such process")]
+                ):
                     result = manager._try_stop_process(12345, "test_vmm")
                     assert result is True
 
@@ -396,18 +416,26 @@ class TestProcessManager:
             socket_file = f"{tmpdir}/{vmm_id}/firecracker.socket"
 
             with patch.object(manager._config, "data_path", tmpdir):
-                with patch("psutil.process_iter") as mock_iter:
-                    mock_proc = MagicMock()
-                    mock_proc.info = {
-                        "pid": 12345,
-                        "name": "firecracker",
-                        "cmdline": ["firecracker", "--api-sock", socket_file],
-                    }
+                with patch("psutil.pids") as mock_pids:
+                    mock_pids.return_value = [12345, 67890]
 
-                    mock_iter.return_value = [mock_proc]
+                    with patch("psutil.Process") as MockProcess:
+                        mock_proc1 = MagicMock()
+                        mock_proc1.name.return_value = "firecracker"
+                        mock_proc1.cmdline.return_value = [
+                            "firecracker",
+                            "--api-sock",
+                            socket_file,
+                        ]
 
-                    pid = manager._find_running_process(vmm_id)
-                    assert pid == 12345
+                        mock_proc2 = MagicMock()
+                        mock_proc2.name.return_value = "other"
+                        mock_proc2.cmdline.return_value = ["other"]
+
+                        MockProcess.side_effect = [mock_proc1, mock_proc2]
+
+                        pid = manager._find_running_process(vmm_id)
+                        assert pid == 12345
 
     def test_find_running_process_not_found(self):
         """Test finding a running process that doesn't exist."""

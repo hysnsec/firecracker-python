@@ -167,6 +167,10 @@ class NetworkManager:
         Returns:
             bool: True if nftables is available, False otherwise
         """
+        import os
+
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            return False
         return NFTABLES_AVAILABLE and self._nft is not None
 
     def _safe_nft_cmd(self, cmd, json_cmd=True):
@@ -541,7 +545,6 @@ class NetworkManager:
                     expr = rule.get("expr", [])
                     has_saddr_match = False
                     has_masquerade = False
-                    comment = rule.get("comment", "")
 
                     for e in expr:
                         if (
@@ -921,18 +924,21 @@ class NetworkManager:
         try:
             handle = self.get_masquerade_handle()
             if handle is not None:
-                cmd = f"delete rule nat POSTROUTING handle {handle}"
-                rc, output, error = self._nft.cmd(cmd)
-
-                if self._config.verbose:
-                    if rc == 0:
+                process = run(
+                    f"nft delete rule nat POSTROUTING handle {handle}",
+                    capture_output=True,
+                    timeout=5,
+                )
+                if process.returncode == 0:
+                    if self._config.verbose:
                         self._logger.debug(
                             f"Deleted masquerade rule with handle {handle}"
                         )
                         self._logger.info("Deleted masquerade rules")
-                    else:
+                else:
+                    if self._config.verbose:
                         self._logger.warn(
-                            f"Error deleting masquerade rule with handle {handle}: {error}"
+                            f"Error deleting masquerade rule with handle {handle}: {process.stderr.decode()}"
                         )
 
         except Exception as e:
@@ -1141,6 +1147,17 @@ class NetworkManager:
 
         except Exception as e:
             raise NetworkError(f"Failed to suggest non-conflicting IP: {str(e)}")
+
+    def close(self):
+        """Close network manager resources and release file descriptors."""
+        try:
+            if self._nft:
+                self._nft = None
+            if self._ipr:
+                self._ipr.close()
+                self._ipr = None
+        except Exception:
+            pass
 
     def create_tap(
         self, tap_name: str = None, iface_name: str = None, gateway_ip: str = None

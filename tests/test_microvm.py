@@ -15,9 +15,10 @@ from firecracker.utils import generate_id, validate_ip_address
 def teardown():
     """Ensure all VMs are cleaned up after tests.
     This fixture is automatically applied to all tests."""
+    from conftest import cleanup_all_resources
+
     yield
-    vm = MicroVM(kernel_file=KERNEL_FILE, base_rootfs=BASE_ROOTFS, verbose=True)
-    vm.delete(all=True)
+    cleanup_all_resources()
 
 
 def generate_random_id(length=8):

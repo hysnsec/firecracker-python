@@ -1,6 +1,5 @@
 """Shared fixtures and utilities for all test modules."""
 
-import json
 import os
 import random
 import string
@@ -8,9 +7,7 @@ import string
 import pytest
 
 from firecracker import MicroVM
-from firecracker.exceptions import NetworkError
 from firecracker.network import NetworkManager
-from firecracker.utils import generate_id, validate_ip_address
 from firecracker.vmm import VMMManager
 
 KERNEL_FILE = "/var/lib/firecracker/vmlinux-6.1.159"
@@ -40,17 +37,25 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "integration: mark test as an integration test")
 
 
+@pytest.fixture(scope="session", autouse=True)
+def pre_test_cleanup():
+    """Clean up orphaned resources before test session starts."""
+    cleanup_all_resources()
+    yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def session_cleanup():
+    """Clean up all resources at the end of the test session."""
+    yield
+    cleanup_all_resources()
+
+
 @pytest.fixture
 def cleanup_vms():
     """Ensure all VMs are cleaned up after tests.
     This fixture should be used by tests that create VMs."""
     yield
-
-    try:
-        vm = MicroVM(kernel_file=KERNEL_FILE, base_rootfs=BASE_ROOTFS, verbose=False)
-        vm.delete(all=True)
-    except Exception:
-        pass
 
     try:
         import subprocess
@@ -64,7 +69,7 @@ def cleanup_vms():
     except Exception:
         pass
 
-    cleanup_network_resources()
+    cleanup_all_resources()
 
 
 @pytest.fixture
@@ -92,19 +97,24 @@ def generate_random_id(length=8):
 
 def cleanup_network_resources():
     """Clean up TAP devices and nftables rules created during tests."""
+    network = None
     try:
         network = NetworkManager()
 
-        links = network._ipr.get_links()
-        for link in links:
-            ifname = link.get("ifname", "")
-            if ifname.startswith("tap_"):
-                try:
-                    idx = network._ipr.link_lookup(ifname=ifname)
-                    if idx:
-                        network._ipr.link("del", index=idx[0])
-                except Exception:
-                    pass
+        if network._ipr:
+            try:
+                links = network._ipr.get_links()
+                for link in links:
+                    ifname = link.get("ifname", "")
+                    if ifname.startswith("tap_"):
+                        try:
+                            idx = network._ipr.link_lookup(ifname=ifname)
+                            if idx:
+                                network._ipr.link("del", index=idx[0])
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         if network._nft:
             try:
@@ -124,3 +134,54 @@ def cleanup_network_resources():
                 pass
     except Exception:
         pass
+    finally:
+        if network:
+            network.close()
+
+
+def cleanup_firecracker_processes():
+    """Kill all Firecracker processes."""
+    import psutil
+
+    try:
+        for pid in psutil.pids():
+            try:
+                proc = psutil.Process(pid)
+                if proc.name() == "firecracker":
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception:
+        pass
+
+
+def cleanup_vmm_directories():
+    """Clean up all VMM directories."""
+    import shutil
+
+    try:
+        from firecracker.config import MicroVMConfig
+
+        config = MicroVMConfig()
+        data_path = config.data_path
+
+        if os.path.exists(data_path):
+            for item in os.listdir(data_path):
+                item_path = os.path.join(data_path, item)
+                if os.path.isdir(item_path):
+                    try:
+                        shutil.rmtree(item_path)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+
+def cleanup_all_resources():
+    """Clean up all Firecracker-related resources."""
+    cleanup_firecracker_processes()
+    cleanup_network_resources()
+    cleanup_vmm_directories()

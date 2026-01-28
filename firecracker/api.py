@@ -5,18 +5,21 @@ from .exceptions import APIError
 from requests_unixsocket import UnixAdapter
 
 DEFAULT_SCHEME = "http://"
+DEFAULT_TIMEOUT = 5
 
 
 class Session(requests.Session):
     """An HTTP over UNIX sockets Session with optimized connection pooling"""
-    def __init__(self):
-        """Create a Session object."""
+
+    def __init__(self, timeout=DEFAULT_TIMEOUT):
+        """Create a Session object.
+
+        Args:
+            timeout (int): Request timeout in seconds
+        """
         super().__init__()
         adapter = UnixAdapter(
-            pool_connections=20,
-            pool_maxsize=20,
-            max_retries=3,
-            pool_block=True
+            pool_connections=20, pool_maxsize=20, max_retries=3, pool_block=True
         )
         self.mount(DEFAULT_SCHEME, adapter)
 
@@ -36,18 +39,24 @@ class Resource:
         self.resource = resource
         self.id_field = id_field
 
-    def get(self):
+    def get(self, timeout=None):
         """Make a GET request.
+
+        Args:
+            timeout (int, optional): Request timeout in seconds
 
         Returns:
             requests.Response: The HTTP response
 
         Raises:
-            APIError: If the request fails or returns an error response
+            APIError: If request fails or returns an error response
         """
         try:
             url = self._api.endpoint + self.resource
-            with self._api.session.get(url) as res:
+            request_timeout = (
+                timeout if timeout is not None else self._api.get_timeout()
+            )
+            with self._api.session.get(url, timeout=request_timeout) as res:
                 if res.status_code != HTTPStatus.OK:
                     json = res.json()
                     if "fault_message" in json:
@@ -91,24 +100,30 @@ class Resource:
             path += "/" + kwargs[self.id_field]
         return self.request("PATCH", path, **kwargs)
 
-    def request(self, method, path, **kwargs):
+    def request(self, method, path, timeout=None, **kwargs):
         """Make an HTTP request to the Firecracker API.
 
         Args:
             method (str): HTTP method (GET, PUT, POST, DELETE, etc.)
             path (str): API endpoint path
+            timeout (int, optional): Request timeout in seconds
             **kwargs: Additional arguments to be sent as JSON in request body
 
         Returns:
             requests.Response: The HTTP response from the API
 
         Raises:
-            APIError: If the request fails or returns an error response
+            APIError: If request fails or returns an error response
         """
         try:
             kwargs = {key: val for key, val in kwargs.items() if val is not None}
             url = self._api.endpoint + path
-            with self._api.session.request(method, url, json=kwargs) as res:
+            request_timeout = (
+                timeout if timeout is not None else self._api.get_timeout()
+            )
+            with self._api.session.request(
+                method, url, json=kwargs, timeout=request_timeout
+            ) as res:
                 if res.status_code != HTTPStatus.NO_CONTENT:
                     json = res.json()
                     if "fault_message" in json:
@@ -116,9 +131,7 @@ class Resource:
                     elif "error" in json:
                         raise APIError(f"API error: {json['error']}")
                     raise APIError(f"Unexpected response: {res.content}")
-
                 return res
-
         except requests.RequestException as e:
             raise APIError(f"Request failed: {str(e)}") from e
         except ValueError as e:
@@ -126,12 +139,20 @@ class Resource:
 
 
 class Api:
-    """A simple HTTP client for the Firecracker API"""
-    def __init__(self, socket_file):
+    """A simple HTTP client for Firecracker API"""
+
+    def __init__(self, socket_file, timeout=DEFAULT_TIMEOUT):
+        """Initialize API client.
+
+        Args:
+            socket_file (str): Path to Firecracker API socket
+            timeout (int): Request timeout in seconds (default: 5)
+        """
         self.socket = socket_file
+        self.timeout = timeout
         url_encoded_path = urllib.parse.quote_plus(socket_file)
         self.endpoint = DEFAULT_SCHEME + url_encoded_path
-        self.session = Session()
+        self.session = Session(timeout=timeout)
 
         self.describe = Resource(self, "/")
         self.vm = Resource(self, "/vm")
@@ -148,6 +169,14 @@ class Api:
         self.create_snapshot = Resource(self, "/snapshot/create")
         self.load_snapshot = Resource(self, "/snapshot/load")
         self.vsock = Resource(self, "/vsock")
+
+    def get_timeout(self):
+        """Get timeout for API requests.
+
+        Returns:
+            int: Timeout value in seconds
+        """
+        return getattr(self, "timeout", DEFAULT_TIMEOUT)
 
     def close(self):
         """Close the session to release resources."""

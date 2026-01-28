@@ -60,14 +60,14 @@ class TestVMConfigurationValidation:
 
         for ip in valid_ips:
             vm = MicroVM(ip_addr=ip, kernel_file=KERNEL_FILE, base_rootfs=BASE_ROOTFS)
-            assert vm._ip_addr == ip
+            assert vm._ip_addr == ip, f"IP address mismatch for {ip}"
 
             # Verify gateway IP derivation
             gateway_parts = ip.split(".")
             gateway_parts[-1] = "1"
             expected_gateway = ".".join(gateway_parts)
             assert vm._gateway_ip == expected_gateway, (
-                f"Expected gateway IP {expected_gateway}, got {vm._gateway_ip}"
+                f"Expected gateway IP {expected_gateway}, got {vm._gateway_ip} for IP {ip}"
             )
 
 

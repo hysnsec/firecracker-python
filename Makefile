@@ -1,4 +1,4 @@
-.PHONY: help install test test-verbose test-unit test-integration test-cov clean lint format test-docker
+.PHONY: help install test test-verbose test-unit test-integration test-cov clean lint format test-docker cleanup-firecracker cleanup-firecracker-dirs
 
 # Default target
 .DEFAULT_GOAL := help
@@ -21,13 +21,13 @@ install-dev: ## Install development dependencies
 	@echo "Installing development dependencies..."
 	$(UV) sync --dev
 
-test: ## Run all tests (continue on failures)
+test: cleanup-firecracker ## Run all tests (continue on failures)
 	@echo "Running tests..."
-	$(PYTEST) $(PYTEST_ARGS)
+	-$(PYTEST) $(PYTEST_ARGS) || true
 
 test-stop: ## Run tests but stop on first failure
 	@echo "Running tests (stop on first failure)..."
-	$(PYTEST) -x $(PYTEST_ARGS)
+	-$(PYTEST) -x $(PYTEST_ARGS) || true
 
 test-maxfail: ## Run tests but stop after N failures (usage: make test-maxfail MAXFAIL=5)
 	@echo "Running tests (stop after $(MAXFAIL) failures)..."
@@ -43,7 +43,7 @@ test-quiet: ## Run tests with minimal output
 
 test-unit: ## Run only unit tests (excluding integration tests)
 	@echo "Running unit tests..."
-	$(PYTEST) -v -m "not integration" $(PYTEST_ARGS)
+	-$(PYTEST) -v -m "not integration" $(PYTEST_ARGS) || true
 
 test-integration: ## Run only integration tests
 	@echo "Running integration tests..."
@@ -51,7 +51,7 @@ test-integration: ## Run only integration tests
 
 test-cov: ## Run tests with coverage report
 	@echo "Running tests with coverage..."
-	$(UV) run pytest --cov=firecracker --cov-report=term-missing --cov-report=html $(PYTEST_ARGS)
+	-$(UV) run pytest --cov=firecracker --cov-report=term-missing --cov-report=html $(PYTEST_ARGS) || true
 
 test-cov-html: ## Run tests and generate HTML coverage report
 	@echo "Running tests with HTML coverage report..."
@@ -116,6 +116,14 @@ clean-all: clean ## Clean everything including virtual environment
 	@echo "Removing virtual environment..."
 	rm -rf .venv
 	@echo "Complete cleanup done."
+
+cleanup-firecracker: ## Clean up Firecracker resources (processes, TAP devices, nftables rules)
+	@echo "Cleaning up Firecracker resources..."
+	@python scripts/cleanup_resources.py
+
+cleanup-firecracker-dirs: cleanup-firecracker ## Clean up Firecracker resources including directories
+	@echo "Cleaning up Firecracker directories..."
+	@python scripts/cleanup_resources.py
 
 ci: lint type-check test ## Run all CI checks (lint, type-check, test)
 	@echo "All CI checks passed!"

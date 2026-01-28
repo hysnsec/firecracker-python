@@ -20,6 +20,7 @@ class VMMManager:
     Attributes:
         logger (Logger): Logger instance for VMM operations
     """
+
     def __init__(self, verbose: bool = False, level: str = "INFO"):
         self._logger = Logger(level=level, verbose=verbose)
         self._config = MicroVMConfig()
@@ -28,10 +29,18 @@ class VMMManager:
         self._process = ProcessManager(verbose=verbose, level=level)
         self._api = None
 
-    def get_api(self, id: str) -> Api:
-        """Get an API instance for a given VMM ID."""
+    def get_api(self, id: str, timeout: int = 5) -> Api:
+        """Get an API instance for a given VMM ID.
+
+        Args:
+            id (str): VMM ID
+            timeout (int): Request timeout in seconds (default: 5)
+
+        Returns:
+            Api: API client instance
+        """
         socket_file = f"{self._config.data_path}/{id}/firecracker.socket"
-        return Api(socket_file)
+        return Api(socket_file, timeout=timeout)
 
     def create_vmm_json_file(self, id: str, **kwargs):
         """Create a JSON file for a VMM.
@@ -57,22 +66,18 @@ class VMMManager:
                 "Running": kwargs.get("Running", True),
                 "Paused": kwargs.get("Paused", False),
             },
-            "Network": {
-                f"tap_{id}": {
-                    "IPAddress": kwargs.get("IPAddress", "")
-                }
-            },
+            "Network": {f"tap_{id}": {"IPAddress": kwargs.get("IPAddress", "")}},
             "Ports": kwargs.get("Ports", {}),
             "Labels": kwargs.get("Labels", {}),
-            "LogPath": kwargs.get("LogPath", f"{self._config.data_path}/{id}/logs")
+            "LogPath": kwargs.get("LogPath", f"{self._config.data_path}/{id}/logs"),
         }
 
         try:
             vmm_dir = f"{self._config.data_path}/{id}"
             os.makedirs(vmm_dir, exist_ok=True)
-            
+
             file_path = f"{vmm_dir}/config.json"
-            with open(file_path, 'w') as json_file:
+            with open(file_path, "w") as json_file:
                 json.dump(vm_data, json_file, indent=4)
 
             if self._config.verbose:
@@ -94,53 +99,55 @@ class VMMManager:
         running_pids = set(self._process.get_pids())
         has_running_vmms = bool(running_pids)
 
-        vmm_id_pattern = re.compile(r'^[a-zA-Z0-9]{8}$')
-        
+        vmm_id_pattern = re.compile(r"^[a-zA-Z0-9]{8}$")
+
         data_path = self._config.data_path
-        
+
         try:
             # Use listdir with error handling
             vmm_dirs = os.listdir(data_path)
         except OSError as e:
             self._logger.error(f"Failed to read data directory {data_path}: {e}")
             return vmm_list
-        
+
         for vmm_id in vmm_dirs:
             # Early validation - skip non-matching IDs
             if not vmm_id_pattern.match(vmm_id):
                 continue
-                
+
             vmm_path = os.path.join(data_path, vmm_id)
 
-            config_path = os.path.join(vmm_path, 'config.json')
+            config_path = os.path.join(vmm_path, "config.json")
             if not (os.path.isdir(vmm_path) and os.path.exists(config_path)):
                 if has_running_vmms and self._config.verbose:
                     self._logger.info(f"Config file not found for VMM ID: {vmm_id}")
                 continue
 
             try:
-                with open(config_path, 'r') as config_file:
+                with open(config_path, "r") as config_file:
                     config_data = json.load(config_file)
-                    
-                pid = config_data.get('State', {}).get('Pid', '')
-                
+
+                pid = config_data.get("State", {}).get("Pid", "")
+
                 if pid and pid in running_pids:
                     network_key = f"tap_{vmm_id}"
-                    network_info = config_data.get('Network', {}).get(network_key, {})
-                    ports_info = config_data.get('Ports', {})
-                    
+                    network_info = config_data.get("Network", {}).get(network_key, {})
+                    ports_info = config_data.get("Ports", {})
+
                     vmm_info = {
-                        "id": config_data.get('ID', vmm_id),
-                        "name": config_data.get('Name', ''),
+                        "id": config_data.get("ID", vmm_id),
+                        "name": config_data.get("Name", ""),
                         "pid": pid,
-                        "ip_addr": network_info.get("IPAddress", ''),
-                        "state": 'Running' if config_data.get('State', {}).get('Running', False) else 'Paused',
-                        "created_at": config_data.get('CreatedAt', ''),
+                        "ip_addr": network_info.get("IPAddress", ""),
+                        "state": "Running"
+                        if config_data.get("State", {}).get("Running", False)
+                        else "Paused",
+                        "created_at": config_data.get("CreatedAt", ""),
                         "ports": ports_info,
-                        "labels": config_data.get('Labels', {})
+                        "labels": config_data.get("Labels", {}),
                     }
                     vmm_list.append(vmm_info)
-                    
+
             except (json.JSONDecodeError, IOError) as e:
                 if self._config.verbose:
                     self._logger.warn(f"Failed to read config for VMM {vmm_id}: {e}")
@@ -160,8 +167,8 @@ class VMMManager:
         try:
             vmm_list = self.list_vmm()
             for vmm_info in vmm_list:
-                if vmm_info['id'] == id:
-                    return vmm_info['id']
+                if vmm_info["id"] == id:
+                    return vmm_info["id"]
 
             return f"VMM with ID {id} not found"
 
@@ -182,42 +189,49 @@ class VMMManager:
             matching_vmm_ids = []
 
             vmm_list = self.list_vmm()
-            
+
             if not vmm_list:
                 return matching_vmm_ids
 
             state_matching_vmms = [
-                vmm_info for vmm_info in vmm_list 
-                if vmm_info['state'] == state
+                vmm_info for vmm_info in vmm_list if vmm_info["state"] == state
             ]
-            
+
             if not state_matching_vmms:
                 return matching_vmm_ids
-            
+
             for vmm_info in state_matching_vmms:
-                vmm_id = vmm_info['id']
-                config_path = os.path.join(self._config.data_path, vmm_id, 'config.json')
-                
+                vmm_id = vmm_info["id"]
+                config_path = os.path.join(
+                    self._config.data_path, vmm_id, "config.json"
+                )
+
                 if not os.path.exists(config_path):
                     continue
-                    
+
                 try:
-                    with open(config_path, 'r') as config_file:
+                    with open(config_path, "r") as config_file:
                         config_data = json.load(config_file)
-                    
-                    vmm_labels = config_data.get('Labels', {})
-                    if all(vmm_labels.get(key) == value for key, value in labels.items()):
+
+                    vmm_labels = config_data.get("Labels", {})
+                    if all(
+                        vmm_labels.get(key) == value for key, value in labels.items()
+                    ):
                         vmm_info = {
-                            'id': config_data.get('ID', vmm_id),
-                            'name': config_data.get('Name', ''),
-                            'state': "Running" if config_data.get('State', {}).get('Running', False) else "Paused",
-                            'created_at': config_data.get('CreatedAt', ''),
+                            "id": config_data.get("ID", vmm_id),
+                            "name": config_data.get("Name", ""),
+                            "state": "Running"
+                            if config_data.get("State", {}).get("Running", False)
+                            else "Paused",
+                            "created_at": config_data.get("CreatedAt", ""),
                         }
                         matching_vmm_ids.append(vmm_info)
-                        
+
                 except (json.JSONDecodeError, IOError) as e:
                     if self._config.verbose:
-                        self._logger.warn(f"Failed to read config for VMM {vmm_id}: {e}")
+                        self._logger.warn(
+                            f"Failed to read config for VMM {vmm_id}: {e}"
+                        )
                     continue
 
             return matching_vmm_ids
@@ -239,9 +253,7 @@ class VMMManager:
             response = api.vm.patch(state=state)
 
             if self._config.verbose:
-                self._logger.debug(
-                    f"Changed VMM {id} state response: {response}"
-                )
+                self._logger.debug(f"Changed VMM {id} state response: {response}")
 
             return f"{state} VMM {id} successfully"
 
@@ -270,9 +282,7 @@ class VMMManager:
             response = api.vm_config.get().json()
 
             if self._config.verbose:
-                self._logger.debug(
-                    f"VMM {id} configuration response: {response}"
-                )
+                self._logger.debug(f"VMM {id} configuration response: {response}")
 
             return response
 
@@ -297,12 +307,12 @@ class VMMManager:
         try:
             api = self.get_api(id)
             response = api.describe.get().json()
-            state = response.get('state')
+            state = response.get("state")
 
             if isinstance(state, str) and state.strip():
                 return state
 
-            return 'Unknown'
+            return "Unknown"
 
         except Exception as e:
             raise VMMError(f"Failed to get state for VMM {id}: {str(e)}")
@@ -327,24 +337,20 @@ class VMMManager:
         try:
             api = self.get_api(id)
             vmm_config = api.vm_config.get().json()
-            boot_args = vmm_config.get('boot-source', {}).get('boot_args', '')
+            boot_args = vmm_config.get("boot-source", {}).get("boot_args", "")
 
-            ip_match = re.search(r'ip=([0-9.]+)', boot_args)
+            ip_match = re.search(r"ip=([0-9.]+)", boot_args)
             if ip_match:
                 ip_addr = ip_match.group(1)
                 return ip_addr
 
             else:
                 if self._config.verbose:
-                    self._logger.info(
-                        f"No ip= found in boot-args for VMM {id}"
-                    )
-                return 'Unknown'
+                    self._logger.info(f"No ip= found in boot-args for VMM {id}")
+                return "Unknown"
 
         except Exception as e:
-            raise VMMError(
-                f"Error while retrieving IP address for VMM {id}: {str(e)}"
-            )
+            raise VMMError(f"Error while retrieving IP address for VMM {id}: {str(e)}")
 
         finally:
             api.close()
@@ -360,11 +366,11 @@ class VMMManager:
         """
         try:
             vmm_list = self.list_vmm()
-            
+
             existing_ips = {
-                vmm_info['ip_addr'] 
-                for vmm_info in vmm_list 
-                if vmm_info.get('ip_addr') and vmm_info['ip_addr'] != 'Unknown'
+                vmm_info["ip_addr"]
+                for vmm_info in vmm_list
+                if vmm_info.get("ip_addr") and vmm_info["ip_addr"] != "Unknown"
             }
 
             return ip_addr in existing_ips
@@ -397,15 +403,13 @@ class VMMManager:
             log_dir = f"{self._config.data_path}/{id}/logs"
 
             if not os.path.exists(f"{log_dir}/{log_file}"):
-                with open(f"{log_dir}/{log_file}", 'w'):
+                with open(f"{log_dir}/{log_file}", "w"):
                     pass
                 if self._config.verbose:
                     self._logger.info(f"Log file {log_dir}/{log_file} is created")
 
         except Exception as e:
-            raise VMMError(
-                f"Unable to create log file at {log_dir}: {str(e)}"
-            )
+            raise VMMError(f"Unable to create log file at {log_dir}: {str(e)}")
 
     def delete_vmm_dir(self, id: str = None):
         """
@@ -416,7 +420,7 @@ class VMMManager:
             id (str): ID of the VMM to delete
         """
         import shutil
-        
+
         try:
             vmm_dir = f"{self._config.data_path}/{id}"
 
@@ -440,16 +444,16 @@ class VMMManager:
         """
         try:
             vmm_list = self.list_vmm()
-            
+
             if not vmm_list:
                 return "No VMMs found to delete"
 
             if id:
-                if not any(vmm['id'] == id for vmm in vmm_list):
+                if not any(vmm["id"] == id for vmm in vmm_list):
                     return f"VMM with ID {id} not found"
                 ids_to_delete = [id]
             else:
-                ids_to_delete = [vmm['id'] for vmm in vmm_list]
+                ids_to_delete = [vmm["id"] for vmm in vmm_list]
 
             deleted_count = 0
             for vmm_id in ids_to_delete:
@@ -495,9 +499,7 @@ class VMMManager:
             if os.path.exists(socket_file):
                 os.unlink(socket_file)
                 if self._config.verbose:
-                    self._logger.info(
-                        f"Unlinked existing socket file {socket_file}"
-                    )
+                    self._logger.info(f"Unlinked existing socket file {socket_file}")
 
             self.create_vmm_dir(f"{self._config.data_path}/{id}")
             return socket_file

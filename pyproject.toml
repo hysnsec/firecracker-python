@@ -41,3 +41,18 @@ omit = [
     "tests/conftest.py",
     "tests/test_microvm.py"
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers --maxfail=1000"
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')"
+]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.0.0",
+]

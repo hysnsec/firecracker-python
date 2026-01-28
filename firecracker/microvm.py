@@ -114,7 +114,7 @@ class MicroVM:
         else:
             self._vcpu = self._config.vcpu
 
-        self._memory = int(self._convert_memory_size(memory or self._config.memory))
+        self._memory = int(MicroVM._convert_memory_size(memory or self._config.memory))
         self._mmds_enabled = (
             mmds_enabled if mmds_enabled is not None else self._config.mmds_enabled
         )
@@ -207,8 +207,8 @@ class MicroVM:
         self._ssh_client = SSHClient()
         self._expose_ports = expose_ports
         self._host_ip = "0.0.0.0"
-        self._host_port = self._parse_ports(host_port)
-        self._dest_port = self._parse_ports(dest_port)
+        self._host_port = MicroVM._parse_ports(host_port)
+        self._dest_port = MicroVM._parse_ports(dest_port)
 
         self._vsock_enabled = vsock_enabled or self._config.vsock_enabled
         self._vsock_guest_cid = vsock_guest_cid or self._config.vsock_guest_cid
@@ -1063,7 +1063,8 @@ class MicroVM:
                     "Proceeding without symlink - snapshot load may fail if paths don't match"
                 )
 
-    def _parse_ports(self, port_value, default_value=None):
+    @staticmethod
+    def _parse_ports(port_value, default_value=None):
         """Parse port values from various input formats.
 
         Args:
@@ -1404,7 +1405,8 @@ class MicroVM:
                 os.remove(path)
             raise VMMError(f"Failed to download kernel from {url}: {str(e)}")
 
-    def _convert_memory_size(self, size):
+    @staticmethod
+    def _convert_memory_size(size):
         """Convert memory size to MiB.
 
         Args:

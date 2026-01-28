@@ -23,7 +23,7 @@ class ProcessManager:
         self._config = MicroVMConfig()
         self._config.verbose = verbose
 
-    def start(self, id: str, args: list) -> str:
+    def start(self, id: str, args: list) -> int:
         """Start a Firecracker process.
 
         Args:
@@ -31,7 +31,7 @@ class ProcessManager:
             args (list): List of command arguments
 
         Returns:
-            str: Process ID if successful
+            int: Process ID if successful
 
         Raises:
             ProcessError: If process fails to start or becomes defunct
@@ -144,7 +144,9 @@ class ProcessManager:
                         return True
                 except ProcessError as e:
                     if self._logger.verbose:
-                        self._logger.warn(f"Failed to stop Firecracker (1st attempt): {e}")
+                        self._logger.warn(
+                            f"Failed to stop Firecracker (1st attempt): {e}"
+                        )
 
                 # If PID-based stop failed, search for actual running process
                 if self._logger.verbose:
@@ -295,16 +297,17 @@ class ProcessManager:
         try:
             socket_path = f"{self._config.data_path}/{id}/firecracker.socket"
 
-            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            for pid in psutil.pids():
                 try:
-                    if proc.info["name"] == "firecracker":
-                        cmdline = proc.info["cmdline"]
+                    proc = psutil.Process(pid)
+                    if proc.name() == "firecracker":
+                        cmdline = proc.cmdline()
                         if cmdline and len(cmdline) > 1:
                             # Check if this process uses the same socket path
                             for i, arg in enumerate(cmdline):
                                 if arg == "--api-sock" and i + 1 < len(cmdline):
                                     if cmdline[i + 1] == socket_path:
-                                        return proc.info["pid"]
+                                        return pid
                 except (
                     psutil.NoSuchProcess,
                     psutil.AccessDenied,
@@ -410,12 +413,13 @@ class ProcessManager:
         pid_list = []
 
         try:
-            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            for pid in psutil.pids():
                 try:
-                    if proc.info["name"] == "firecracker":
-                        cmdline = proc.info["cmdline"]
+                    proc = psutil.Process(pid)
+                    if proc.name() == "firecracker":
+                        cmdline = proc.cmdline()
                         if cmdline and len(cmdline) > 1 and "--api-sock" in cmdline:
-                            pid_list.append(proc.info["pid"])
+                            pid_list.append(pid)
                 except (
                     psutil.NoSuchProcess,
                     psutil.AccessDenied,
