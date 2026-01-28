@@ -55,6 +55,7 @@ make test-docker-clean
 The following tests were recently added to cover new functionality:
 
 #### Snapshot Symlink Tests
+
 - test_prepare_snapshot_rootfs_symlink_with_valid_snapshot
 - test_prepare_snapshot_rootfs_symlink_with_matching_paths
 - test_prepare_snapshot_rootfs_symlink_with_binary_snapshot
@@ -62,6 +63,7 @@ The following tests were recently added to cover new functionality:
 - test_prepare_snapshot_rootfs_symlink_without_block_devices
 
 #### Port Parsing Tests
+
 - test_parse_ports_with_integer
 - test_parse_ports_with_string_single
 - test_parse_ports_with_string_comma_separated
@@ -74,7 +76,27 @@ The following tests were recently added to cover new functionality:
 - test_parse_ports_with_empty_string
 - test_parse_ports_with_mixed_list
 
+#### Cleanup Tests
+
+- test_network_cleanup_continues_on_nat_failure
+- test_network_cleanup_continues_on_masquerade_failure
+- test_network_cleanup_continues_on_port_forward_failure
+- test_network_cleanup_all_failures_logs_errors
+- test_vmm_cleanup_continues_on_network_failure
+- test_cleanup_orphaned_tap_devices_finds_orphans
+- test_cleanup_orphaned_tap_devices_no_orphans
+- test_cleanup_orphaned_tap_devices_empty_links
+- test_cleanup_orphaned_resources_lists_running_vms
+- test_cleanup_orphaned_resources_no_running_vms
+- test_delete_all_cleans_orphaned_resources
+- test_delete_all_no_vms
+- test_delete_single_vm_no_orphan_cleanup
+- test_delete_all_deletes_all_running_vms
+- test_cleanup_orphaned_tap_devices_with_network_rules
+- test_cleanup_handles_exceptions_gracefully
+
 #### Docker Image Tests
+
 - test_is_valid_docker_image_local_exists
 - test_is_valid_docker_image_registry
 - test_is_valid_docker_image_invalid
@@ -85,6 +107,7 @@ The following tests were recently added to cover new functionality:
 - test_export_docker_image_not_found
 
 #### Port Forwarding Tests
+
 - test_setup_port_forwarding_single_port
 - test_setup_port_forwarding_multiple_ports
 - test_setup_port_forwarding_mismatched_counts
@@ -95,6 +118,7 @@ The following tests were recently added to cover new functionality:
 - test_remove_port_forwarding_with_vmm_id
 
 #### Snapshot Validation Tests
+
 - test_snapshot_load_with_missing_memory_file
 - test_snapshot_load_with_missing_snapshot_file
 - test_snapshot_load_with_missing_rootfs_file
@@ -104,6 +128,7 @@ The following tests were recently added to cover new functionality:
 - test_snapshot_create_without_vm_id
 
 #### Memory Size Conversion Tests
+
 - test_convert_memory_size_minimum
 - test_convert_memory_size_negative
 - test_convert_memory_size_float_gb

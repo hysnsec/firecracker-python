@@ -8,6 +8,7 @@ Welcome to the Firecracker Python SDK documentation! This documentation will hel
 - [API Reference](api-reference.md) - Detailed information about the SDK's API
 - [Configuration](configuration.md) - Configuration options for microVMs
 - [Network](network.md) - Networking capabilities and examples
+- [Cleanup](cleanup.md) - Resource cleanup and orphaned resource management
 - [Examples](examples.md) - Practical examples for using the SDK
 
 ## What is Firecracker?
@@ -70,4 +71,4 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
-``` 
+```

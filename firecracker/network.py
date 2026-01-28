@@ -1212,19 +1212,110 @@ class NetworkManager:
         except Exception as e:
             raise NetworkError(f"Failed to delete tap device {name}: {str(e)}")
 
+    def cleanup_orphaned_tap_devices(self, running_vm_ids: set):
+        """Remove TAP devices that don't belong to running VMs.
+        
+        This cleans up resources from VMs that failed during creation
+        (before config.json was created) but had network resources allocated.
+
+        Args:
+            running_vm_ids (set): Set of VM IDs that are currently running
+        """
+        try:
+            links = self._ipr.get_links()
+            cleaned_count = 0
+            
+            for link in links:
+                ifname = link.get("ifname", "")
+                if ifname.startswith("tap_"):
+                    machine_id = ifname[4:]  # Remove 'tap_' prefix
+                    
+                    # If this TAP doesn't belong to a running VM, clean it
+                    if machine_id not in running_vm_ids:
+                        self._logger.info(f"Cleaning orphaned TAP device {ifname}")
+                        
+                        # Best-effort cleanup of all associated resources
+                        try:
+                            self.delete_nat_rules(ifname)
+                        except Exception as e:
+                            if self._config.verbose:
+                                self._logger.warn(f"Failed to delete NAT rules for orphaned {ifname}: {e}")
+                        
+                        try:
+                            self.delete_all_port_forward(machine_id)
+                        except Exception as e:
+                            if self._config.verbose:
+                                self._logger.warn(f"Failed to delete port forwarding for orphaned {ifname}: {e}")
+                        
+                        try:
+                            self.delete_tap(ifname)
+                            cleaned_count += 1
+                            if self._config.verbose:
+                                self._logger.info(f"Deleted orphaned TAP device {ifname}")
+                        except Exception as e:
+                            if self._config.verbose:
+                                self._logger.warn(f"Failed to delete orphaned TAP device {ifname}: {e}")
+            
+            if cleaned_count > 0:
+                self._logger.info(f"Cleaned up {cleaned_count} orphaned TAP device(s)")
+            
+        except Exception as e:
+            self._logger.error(f"Failed to cleanup orphaned TAP devices: {e}")
+
     def cleanup(self, tap_device: str):
         """Clean up network resources including TAP device and firewall rules.
+        
+        Uses best-effort approach: each cleanup step runs independently,
+        and failures in one step don't prevent cleanup of other resources.
 
         Args:
             tap_device (str): Name of the tap device to clean up.
         """
+        cleanup_errors = []
+        
+        # Step 1: Delete NAT rules (best effort)
         try:
             self.delete_nat_rules(tap_device)
-            machine_id = tap_device[4:]
-
-            self.delete_masquerade()
-            self.delete_all_port_forward(machine_id)
-            self.delete_tap(tap_device)
-
+            if self._config.verbose:
+                self._logger.debug(f"Deleted NAT rules for {tap_device}")
         except Exception as e:
-            raise NetworkError(f"Failed to cleanup network resources: {str(e)}")
+            cleanup_errors.append(f"Failed to delete NAT rules: {str(e)}")
+            if self._config.verbose:
+                self._logger.warn(f"Failed to delete NAT rules for {tap_device}: {e}")
+        
+        # Step 2: Delete masquerade (best effort)
+        try:
+            self.delete_masquerade()
+            if self._config.verbose:
+                self._logger.debug("Deleted masquerade rule")
+        except Exception as e:
+            cleanup_errors.append(f"Failed to delete masquerade: {str(e)}")
+            if self._config.verbose:
+                self._logger.warn(f"Failed to delete masquerade: {e}")
+        
+        # Step 3: Delete port forwarding (best effort)
+        try:
+            machine_id = tap_device[4:]
+            self.delete_all_port_forward(machine_id)
+            if self._config.verbose:
+                self._logger.debug(f"Deleted port forwarding for {machine_id}")
+        except Exception as e:
+            cleanup_errors.append(f"Failed to delete port forwarding: {str(e)}")
+            if self._config.verbose:
+                self._logger.warn(f"Failed to delete port forwarding: {e}")
+        
+        # Step 4: Delete TAP device (always try this, even if other steps failed)
+        try:
+            self.delete_tap(tap_device)
+            if self._config.verbose:
+                self._logger.debug(f"Deleted TAP device {tap_device}")
+        except Exception as e:
+            cleanup_errors.append(f"Failed to delete TAP device: {str(e)}")
+            if self._config.verbose:
+                self._logger.warn(f"Failed to delete TAP device {tap_device}: {e}")
+        
+        # Report cleanup issues
+        if cleanup_errors:
+            error_msg = f"Partial cleanup for {tap_device}: {'; '.join(cleanup_errors)}"
+            if self._config.verbose:
+                self._logger.warn(error_msg)
