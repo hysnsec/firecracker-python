@@ -19,7 +19,6 @@ from firecracker.process import ProcessManager
 from firecracker.vmm import VMMManager
 from firecracker.utils import (
     run,
-    get_public_ip,
     validate_ip_address,
     generate_id,
     generate_name,
@@ -518,7 +517,7 @@ class MicroVM:
         """Delete a specific VMM or all VMMs and clean up associated resources.
 
         Args:
-            id (str, optional): The ID of the VMM to delete. If not provided, the current VMM's ID is used.
+            id (str, optional): The ID of the VMM to delete. If not provided, current VMM's ID is used.
             all (bool, optional): If True, delete all running VMMs. Defaults to False.
 
         Returns:
@@ -535,7 +534,11 @@ class MicroVM:
             if all:
                 for vmm in vmm_list:
                     self._vmm.delete_vmm(vmm["id"])
-                return "All VMMs are deleted"
+                
+                # Clean up orphaned resources from VMs that failed during creation
+                self._vmm.cleanup_orphaned_resources()
+                
+                return "All VMMs and orphaned resources are deleted"
 
             target_id = id if id else self._microvm_id
             if not target_id:
@@ -891,19 +894,21 @@ class MicroVM:
                                 # Need to restart it before retry
                                 if self._config.verbose:
                                     self._logger.info(
-                                        f"Restarting Firecracker process for retry..."
+                                        "Restarting Firecracker process for retry..."
                                     )
 
                                 # Close old API connection
                                 try:
                                     self._api.close()
-                                except:
+                                except Exception:
+                                    self._logger.warning("Failed to close old API connection")
                                     pass
 
                                 # Kill old Firecracker process if it's still running
                                 try:
                                     self._process.kill(id)
-                                except:
+                                except Exception:
+                                    self._logger.warning("Failed to kill old Firecracker process")
                                     pass
 
                                 # Start new Firecracker process
@@ -932,7 +937,7 @@ class MicroVM:
                                 )
                                 if self._config.verbose:
                                     self._logger.info(
-                                        f"Snapshot loaded successfully after symlink creation and process restart"
+                                        "Snapshot loaded successfully after symlink creation and process restart"
                                     )
                             except Exception as retry_error:
                                 raise VMMError(
@@ -1043,13 +1048,13 @@ class MicroVM:
                         "No block_devices found in snapshot, skipping symlink creation"
                     )
 
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             # Snapshot is in binary format, cannot parse to extract rootfs path
             # This is normal for some Firecracker versions
             # Silently skip symlink creation and let the load attempt proceed
             if self._config.verbose:
                 self._logger.warn(
-                    f"Snapshot is in binary format, cannot extract rootfs path for symlink creation"
+                    "Snapshot is in binary format, cannot extract rootfs path for symlink creation"
                 )
                 self._logger.warn(
                     "Proceeding without symlink - snapshot load may fail if paths don't match"
