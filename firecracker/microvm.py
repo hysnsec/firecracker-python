@@ -43,6 +43,7 @@ class MicroVM:
         image (str, optional): Docker image to use for the MicroVM
         base_rootfs (str, optional): Path to the base rootfs file
         rootfs_size (str, optional): Size of the rootfs file
+        rootfs_format (str, optional): Filesystem format for rootfs (ext3, ext4, xfs). Defaults to ext4
         overlayfs (bool, optional): Whether to use overlayfs
         overlayfs_file (str, optional): Path to the overlayfs file
         vcpu (int, optional): Number of vCPUs
@@ -77,6 +78,7 @@ class MicroVM:
         image: str = None,
         base_rootfs: str = None,
         rootfs_size: str = None,
+        rootfs_format: str = None,
         overlayfs: bool = False,
         overlayfs_file: str = None,
         vcpu: int = None,
@@ -189,10 +191,20 @@ class MicroVM:
             self._rootfs_file = os.path.join(self._rootfs_dir, base_rootfs_name)
 
         self._rootfs_size = rootfs_size or self._config.rootfs_size
+
+        # Validate and set rootfs format
+        supported_formats = ["ext3", "ext4", "xfs"]
+        self._rootfs_format = rootfs_format or self._config.rootfs_format
+        if self._rootfs_format not in supported_formats:
+            raise ValueError(
+                f"Unsupported rootfs format '{self._rootfs_format}'. "
+                f"Supported formats are: {', '.join(supported_formats)}"
+            )
+
         self._overlayfs = overlayfs or self._config.overlayfs
         if self._overlayfs:
             self._overlayfs_file = overlayfs_file or os.path.join(
-                self._rootfs_dir, "overlayfs.ext4"
+                self._rootfs_dir, f"overlayfs.{self._rootfs_format}"
             )
             self._overlayfs_name = os.path.basename(
                 self._overlayfs_file.replace("./", "")
@@ -311,7 +323,12 @@ class MicroVM:
             if not self._docker_image:
                 return "No Docker image specified for building rootfs"
 
-            self._build_rootfs(self._docker_image, self._base_rootfs, self._rootfs_size)
+            self._build_rootfs(
+                self._docker_image,
+                self._base_rootfs,
+                self._rootfs_size,
+                self._rootfs_format,
+            )
 
             return f"Rootfs built at {self._base_rootfs}"
 
@@ -370,7 +387,10 @@ class MicroVM:
                             f"Building rootfs from Docker image: {self._docker_image}"
                         )
                     self._build_rootfs(
-                        self._docker_image, self._base_rootfs, self._rootfs_size
+                        self._docker_image,
+                        self._base_rootfs,
+                        self._rootfs_size,
+                        self._rootfs_format,
                     )
 
             self._network.setup(
@@ -1545,37 +1565,68 @@ class MicroVM:
         except Exception as e:
             raise VMMError(f"Unexpected error: {e}")
 
-    def _build_rootfs(self, image: str, file: str, size: str):
+    def _build_rootfs(self, image: str, file: str, size: str, fs_format: str = "ext4"):
         """Create a filesystem image from a tar file.
 
         Args:
             image (str): Docker image name
             file (str): Path to the output image file
             size (str): Size of the image file
+            fs_format (str): Filesystem format (ext3, ext4, or xfs). Defaults to ext4
 
         Returns:
             str: Path to the created image file
         """
         tmp_dir = None
         try:
+            # Validate filesystem format
+            supported_formats = ["ext3", "ext4", "xfs"]
+            if fs_format not in supported_formats:
+                raise ValueError(
+                    f"Unsupported filesystem format '{fs_format}'. "
+                    f"Supported formats are: {', '.join(supported_formats)}"
+                )
+
             self._download_docker(image)
             tar_file = self._export_docker_image(image)
 
             if not tar_file or not os.path.exists(tar_file):
                 return f"Failed to export Docker image {image}"
 
+            # Allocate file
             run(f"fallocate -l {size} {file}")
             if self._config.verbose:
                 self._logger.debug(f"Image file created: {file}")
 
-            run(f"mkfs.ext4 {file}")
-            if self._config.verbose:
-                self._logger.debug(f"Formatting filesystem: {file} with size {size}")
+            # Format filesystem based on the specified format
+            if fs_format == "xfs":
+                run(f"mkfs.xfs -f {file}")
+                if self._config.verbose:
+                    self._logger.debug(
+                        f"Formatting filesystem: {file} with xfs (size {size})"
+                    )
+            elif fs_format == "ext3":
+                run(f"mkfs.ext3 -F {file}")
+                if self._config.verbose:
+                    self._logger.debug(
+                        f"Formatting filesystem: {file} with ext3 (size {size})"
+                    )
+                # Check filesystem for ext3
+                run(f"e2fsck -f -y {file}")
+                if self._config.verbose:
+                    self._logger.debug(f"Filesystem check completed for: {file}")
+            else:  # ext4 (default)
+                run(f"mkfs.ext4 -F {file}")
+                if self._config.verbose:
+                    self._logger.debug(
+                        f"Formatting filesystem: {file} with ext4 (size {size})"
+                    )
+                # Check filesystem for ext4
+                run(f"e2fsck -f -y {file}")
+                if self._config.verbose:
+                    self._logger.debug(f"Filesystem check completed for: {file}")
 
-            run(f"e2fsck -f -y {file}")
-            if self._config.verbose:
-                self._logger.debug(f"Filesystem check completed for: {file}")
-
+            # Mount and extract
             tmp_dir = tempfile.mkdtemp()
             run(f"mount -o loop {file} {tmp_dir}")
 
@@ -1594,7 +1645,7 @@ class MicroVM:
                 )
 
             if self._config.verbose:
-                self._logger.info("Build rootfs completed")
+                self._logger.info(f"Build rootfs completed with {fs_format} filesystem")
 
         except Exception as e:
             if tmp_dir:
