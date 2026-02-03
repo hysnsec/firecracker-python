@@ -1,15 +1,16 @@
-import os
 from dataclasses import dataclass
 
 
 @dataclass
 class MicroVMConfig:
     """Configuration defaults for Firecracker microVMs."""
+
     data_path: str = "/var/lib/firecracker"
     binary_path: str = "/usr/local/bin/firecracker"
     snapshot_path: str = "/var/lib/firecracker/snapshots"
     kernel_file: str = None
     rootfs_size: str = "5G"
+    rootfs_format: str = "ext4"
     initrd_file: str = None
     init_file: str = "/sbin/init"
     base_rootfs: str = None
