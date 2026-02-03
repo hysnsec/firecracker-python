@@ -475,14 +475,62 @@ class VMMManager:
             raise VMMError(f"Error during VMM deletion: {str(e)}")
 
     def cleanup(self, id=None):
-        """Clean up network and process resources for a VMM."""
+        """Clean up network and process resources for a VMM.
+        
+        Uses best-effort approach: each cleanup step runs independently,
+        and failures in one step don't prevent cleanup of other resources.
+        """
+        cleanup_errors = []
+        
+        # Stop process (best effort)
         try:
             self._process.stop(id)
-            self._network.cleanup(f"tap_{id}")
-            self.delete_vmm_dir(id)
-
         except Exception as e:
-            raise VMMError(f"Failed to cleanup VMM {id}: {str(e)}") from e
+            cleanup_errors.append(f"Process cleanup failed: {str(e)}")
+            if self._config.verbose:
+                self._logger.warn(f"Failed to stop process for {id}: {e}")
+        
+        # Cleanup network (best effort)
+        try:
+            self._network.cleanup(f"tap_{id}")
+        except Exception as e:
+            cleanup_errors.append(f"Network cleanup failed: {str(e)}")
+            if self._config.verbose:
+                self._logger.warn(f"Failed to cleanup network for {id}: {e}")
+        
+        # Delete directory (best effort)
+        try:
+            self.delete_vmm_dir(id)
+        except Exception as e:
+            cleanup_errors.append(f"Directory cleanup failed: {str(e)}")
+            if self._config.verbose:
+                self._logger.warn(f"Failed to delete directory for {id}: {e}")
+        
+        # Report if cleanup had issues
+        if cleanup_errors:
+            self._logger.error(f"Cleanup errors for {id}: {'; '.join(cleanup_errors)}")
+
+    def cleanup_orphaned_resources(self):
+        """Clean up resources from VMs that failed during creation.
+        
+        These VMs have network resources (TAP devices, NAT rules)
+        but no config.json file, so they're not found by list_vmm().
+        """
+        try:
+            # Get running VM IDs
+            vmm_list = self.list_vmm()
+            running_vm_ids = {vmm["id"] for vmm in vmm_list}
+            
+            if self._config.verbose:
+                self._logger.debug(
+                    f"Found {len(running_vm_ids)} running VMs: {running_vm_ids}"
+                )
+            
+            # Clean up orphaned TAP devices
+            self._network.cleanup_orphaned_tap_devices(running_vm_ids)
+            
+        except Exception as e:
+            self._logger.error(f"Failed to cleanup orphaned resources: {e}")
 
     def socket_file(self, id: str) -> str:
         """Ensure the socket file is ready for use, unlinking if necessary.

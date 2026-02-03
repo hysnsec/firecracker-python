@@ -3,6 +3,7 @@
 import os
 import random
 import string
+from unittest.mock import patch
 
 import pytest
 
@@ -74,20 +75,35 @@ def cleanup_vms():
 
 @pytest.fixture
 def mock_vm():
-    """Fixture that provides a mock MicroVM instance for unit tests."""
-    return MicroVM(kernel_file=KERNEL_FILE, base_rootfs=BASE_ROOTFS)
+    """Fixture that provides a mock MicroVM instance for unit tests.
+    
+    Note: This fixture mocks IPRoute to avoid netlink socket issues on non-Linux platforms.
+    Tests that need actual network operations should mark themselves with @pytest.mark.integration
+    """
+    with patch('firecracker.network.IPRoute'):
+        return MicroVM(kernel_file=KERNEL_FILE, base_rootfs=BASE_ROOTFS)
 
 
 @pytest.fixture
 def network_manager():
-    """Fixture that provides a NetworkManager instance."""
-    return NetworkManager()
+    """Fixture that provides a NetworkManager instance.
+    
+    Note: This fixture mocks IPRoute to avoid netlink socket issues on non-Linux platforms.
+    Tests that need actual network operations should mark themselves with @pytest.mark.integration
+    """
+    with patch('firecracker.network.IPRoute'):
+        return NetworkManager()
 
 
 @pytest.fixture
 def vmm_manager():
-    """Fixture that provides a VMMManager instance."""
-    return VMMManager()
+    """Fixture that provides a VMMManager instance.
+    
+    Note: This fixture mocks IPRoute to avoid netlink socket issues on non-Linux platforms.
+    Tests that need actual network operations should mark themselves with @pytest.mark.integration
+    """
+    with patch('firecracker.network.IPRoute'):
+        return VMMManager()
 
 
 def generate_random_id(length=8):
