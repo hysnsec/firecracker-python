@@ -1,315 +1,220 @@
-# Firecracker Python SDK Examples
+# Examples
 
-This document provides practical examples for using the Firecracker Python SDK.
+Practical examples for firecracker-python. Run them as root on a Linux host with KVM.
 
-## Basic Examples
-
-### Creating and Starting a microVM
+All examples use the files from the [setup script](../FIRECRACKER_SETUP.md):
 
 ```python
 from firecracker import MicroVM
 
-# Create a microVM with default settings
-vm = MicroVM()
-vm.create()
+KERNEL = "./firecracker-files/vmlinux"
+ROOTFS = "./firecracker-files/rootfs.img"
+SSH_KEY = "./ssh_keys/ubuntu-22.04"
+```
 
-# Check the status of the microVM
+The `examples/` directory has runnable scripts:
+
+| Script | Shows |
+|---|---|
+| `examples/sample.py` | Create a VM in a free subnet, wait for SSH, and connect |
+| `examples/create_vm.py` | Pass user data through MMDS |
+| `examples/configure_vm_network.py` | Static IP address and port forwarding |
+| `examples/create_vm_with_filesystem_format.py` | Build ext3, ext4 and xfs rootfs images from Docker images |
+| `examples/load_snapshot.py` | Load a VM from a snapshot |
+
+## Basic examples
+
+### Create a microVM
+
+```python
+vm = MicroVM(kernel_file=KERNEL, base_rootfs=ROOTFS)
+print(vm.create())
 print(vm.status())
 ```
 
-### Creating a microVM with Custom Resources
+### Set CPU and memory
 
 ```python
-from firecracker import MicroVM
-
-# Create a microVM with custom resources
-vm = MicroVM(
-    vcpu=2,
-    memory=1024,
-    ip_addr="192.168.100.2"
-)
+vm = MicroVM(kernel_file=KERNEL, base_rootfs=ROOTFS, vcpu=2, memory="1G")
 vm.create()
 ```
 
-### Connecting to a microVM via SSH
+### Connect over SSH
 
 ```python
-from firecracker import MicroVM
-
-# Create a microVM
-vm = MicroVM()
+vm = MicroVM(kernel_file=KERNEL, base_rootfs=ROOTFS)
 vm.create()
 
-# Connect to the microVM via SSH
-# The key_path should point to the private key that corresponds to the public key
-# used when building the rootfs (see the getting-started guide)
-vm.connect(key_path="/path/to/private/key")
-
-# This will open an interactive SSH session
+# Opens an interactive session. The call returns when you log out.
+vm.connect(key_path=SSH_KEY)
 ```
 
-### Managing multiple microVMs
+### Manage several microVMs
+
+Give each VM its own `/24` subnet. See [Network](network.md#give-each-vm-its-own-subnet).
 
 ```python
-from firecracker import MicroVM
+web = MicroVM(name="web-server", kernel_file=KERNEL, base_rootfs=ROOTFS, ip_addr="172.16.0.2")
+web.create()
 
-# Create multiple microVMs
-vm1 = MicroVM(name="web-server")
-vm1.create()
+db = MicroVM(name="database", kernel_file=KERNEL, base_rootfs=ROOTFS, ip_addr="172.16.1.2")
+db.create()
 
-vm2 = MicroVM(name="database")
-vm2.create()
+for info in MicroVM.list():
+    print(info["id"], info["name"], info["ip_addr"])
 
-# List all running microVMs
-vms = MicroVM.list()
-print(vms)
+web.pause()
+web.resume()
 
-# Pause a specific microVM
-vm1.pause()
+db.delete()
 
-# Resume a specific microVM
-vm1.resume()
-
-# Delete a specific microVM
-vm2.delete()
-
-# Delete all microVMs
-vm = MicroVM()
-vm.delete(all=True)
+# Delete every VM
+MicroVM().delete(all=True)
 ```
 
-## Network Examples
+## Network examples
 
-### Port Forwarding
+### Forward a port
 
 ```python
-from firecracker import MicroVM
-
-# Create a microVM
-vm = MicroVM()
+vm = MicroVM(kernel_file=KERNEL, base_rootfs=ROOTFS)
 vm.create()
 
-# Forward host port 8080 to port 80 in the microVM
+# Host port 8080 -> guest port 80
 vm.port_forward(host_port=8080, dest_port=80)
 
-# Connect to the microVM
-vm.connect(key_path="/path/to/private/key")
-
-# Inside the microVM, you can install and run a web server
-# Then access it from the host at http://localhost:8080
-
-# Remove the port forwarding when no longer needed
+# Remove the forward
 vm.port_forward(host_port=8080, dest_port=80, remove=True)
 ```
 
-### Using Bridge Networking
+### Forward ports at creation
 
 ```python
-from firecracker import MicroVM
-
-# Create a microVM with bridge networking
 vm = MicroVM(
-    bridge=True,
-    bridge_name="br0",  # Use an existing bridge
-    ip_addr="192.168.1.100"
+    kernel_file=KERNEL,
+    base_rootfs=ROOTFS,
+    expose_ports=True,
+    host_port=[10222, 8080],
+    dest_port=[22, 80],
 )
 vm.create()
 ```
 
-## Advanced Examples
+## Rootfs examples
 
-### Using MMDS (Microvm Metadata Service)
+### Build a rootfs from a Docker image
+
+The image must contain an init system, an SSH server and your public key. See [Build a rootfs from a Docker image](rootfs.md).
 
 ```python
-from firecracker import MicroVM
-
-# Create a microVM with MMDS enabled
 vm = MicroVM(
+    image="my-rootfs:latest",
+    base_rootfs="/var/lib/firecracker/my-rootfs.img",
+    rootfs_size="10G",
+    kernel_file=KERNEL,
+)
+vm.build()   # build first
+vm.create()  # then create
+```
+
+## Advanced examples
+
+### Pass metadata through MMDS
+
+```python
+vm = MicroVM(
+    kernel_file=KERNEL,
+    base_rootfs=ROOTFS,
     mmds_enabled=True,
-    mmds_ip="169.254.169.254"
-)
-vm.create()
-
-# Add data to MMDS
-vm._api.mmds.put(json_data={
-    "instance-id": "i-abcdef123456",
-    "hostname": "example-host",
-    "local-ipv4": "192.168.100.2",
-    "public-ipv4": "203.0.113.10"
-})
-
-# Inside the microVM, you can access this data using:
-# curl http://169.254.169.254/latest/meta-data/instance-id
-```
-
-### Creating a microVM with Labels
-
-```python
-from firecracker import MicroVM
-
-# Create a microVM with labels
-vm = MicroVM(
-    labels={
-        "environment": "production",
-        "app": "web-server",
-        "team": "infrastructure"
-    }
-)
-vm.create()
-
-# Later, find microVMs by labels
-vm_finder = MicroVM()
-found_vms = vm_finder.find(state="running", labels={"environment": "production"})
-print(found_vms)
-```
-
-### Using a Custom Rootfs
-
-```python
-from firecracker import MicroVM
-
-# Create a microVM with a custom rootfs
-vm = MicroVM(
-    base_rootfs="/path/to/custom/rootfs.img"
+    user_data="#!/bin/sh\necho hello > /hello.txt\n",
 )
 vm.create()
 ```
 
-### Downloading a Rootfs from URL
+Read it from the guest with an MMDS version 2 token:
 
-```python
-from firecracker import MicroVM
-
-# Create a microVM with a rootfs downloaded from URL
-vm = MicroVM(
-    rootfs_url="https://example.com/path/to/rootfs.img"
-)
-vm.create()
+```bash
+TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-metadata-token-ttl-seconds: 21600")
+curl -s -H "X-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id
 ```
 
-## Practical Use Cases
+The library does not run `user_data`. See [Run user data at boot](advanced.md#run-user-data-at-boot).
 
-### Running a Web Server in a microVM
+### Find microVMs by label
 
 ```python
-from firecracker import MicroVM
-
-# Create a microVM with appropriate resources
 vm = MicroVM(
-    vcpu=2,
-    memory=1024,
-    ip_addr="192.168.100.2"
+    kernel_file=KERNEL,
+    base_rootfs=ROOTFS,
+    labels={"environment": "production", "app": "web-server"},
 )
 vm.create()
 
-# Forward port 80 to host port 8080
+# state is case-sensitive: "Running" or "Paused"
+matches = MicroVM().find(state="Running", labels={"environment": "production"})
+for match in matches:
+    print(match["id"], match["name"])
+```
+
+### Create and load a snapshot
+
+```python
+vm = MicroVM(kernel_file=KERNEL, base_rootfs=ROOTFS)
+vm.create()
+vm.snapshot(action="create")
+```
+
+See [Snapshots](snapshots.md) for how to load it.
+
+## Use cases
+
+### Run a web server
+
+```python
+vm = MicroVM(name="web", kernel_file=KERNEL, base_rootfs=ROOTFS, vcpu=2, memory="1G")
+vm.create()
 vm.port_forward(host_port=8080, dest_port=80)
+vm.connect(key_path=SSH_KEY)
 
-# Connect to the microVM
-vm.connect(key_path="/path/to/private/key")
-
-# Inside the microVM, you would run:
-# apt-get update
-# apt-get install -y nginx
-# systemctl start nginx
-
-# Now you can access the web server from the host at http://localhost:8080
+# Inside the guest:
+#   apt-get update && apt-get install -y nginx
+#   systemctl start nginx
+#
+# Then open http://<host-ip>:8080
 ```
 
-### Running a Database in a microVM
+### Run a database
 
 ```python
-from firecracker import MicroVM
-
-# Create a microVM with appropriate resources for a database
 vm = MicroVM(
     name="database",
+    kernel_file=KERNEL,
+    base_rootfs=ROOTFS,
     vcpu=4,
-    memory=4096,
-    ip_addr="192.168.100.3"
+    memory="4G",
+    ip_addr="172.16.1.2",
 )
 vm.create()
-
-# Forward database port
 vm.port_forward(host_port=5432, dest_port=5432)
-
-# Connect to the microVM
-vm.connect(key_path="/path/to/private/key")
-
-# Inside the microVM, you would install and configure your database
-
-# Now you can connect to the database from the host at localhost:5432
 ```
 
-### Creating a Development Environment
+## Handle errors
+
+`MicroVM` methods wrap most failures in `VMMError`:
 
 ```python
 from firecracker import MicroVM
-
-# Create a development environment microVM
-vm = MicroVM(
-    name="dev-env",
-    vcpu=2,
-    memory=2048,
-    ip_addr="192.168.100.4"
-)
-vm.create()
-
-# Forward necessary ports
-vm.port_forward(host_port=8080, dest_port=80)  # Web server
-vm.port_forward(host_port=3000, dest_port=3000)  # Development server
-
-# Connect to the microVM
-vm.connect(key_path="/path/to/private/key")
-
-# Inside the microVM, you would set up your development environment
-```
-
-## Troubleshooting Examples
-
-### Handling IP Address Conflicts
-
-```python
-from firecracker import MicroVM
-from firecracker.network import NetworkManager
-
-# Check for IP conflicts before creating a microVM
-network_manager = NetworkManager()
-preferred_ip = "192.168.100.2"
-
-if network_manager.detect_cidr_conflict(preferred_ip):
-    # If there's a conflict, get a suggested non-conflicting IP
-    non_conflicting_ip = network_manager.suggest_non_conflicting_ip(preferred_ip)
-    print(f"IP conflict detected. Using {non_conflicting_ip} instead.")
-    vm = MicroVM(ip_addr=non_conflicting_ip)
-else:
-    vm = MicroVM(ip_addr=preferred_ip)
-
-vm.create()
-```
-
-### Recovering from Errors
-
-```python
-from firecracker import MicroVM
-from firecracker.exceptions import APIError, VMMError, ConfigurationError, ProcessError
+from firecracker.exceptions import VMMError
 
 try:
-    vm = MicroVM()
-    vm.create()
-except ConfigurationError as e:
-    print(f"Configuration error: {e}")
-    # Handle configuration error
-except APIError as e:
-    print(f"API error: {e}")
-    # Handle API error
+    vm = MicroVM(kernel_file=KERNEL, base_rootfs=ROOTFS)
+    print(vm.create())
 except VMMError as e:
-    print(f"VMM error: {e}")
-    # Handle VMM error
-except ProcessError as e:
-    print(f"Process error: {e}")
-    # Handle process error
-except Exception as e:
-    print(f"Unexpected error: {e}")
-    # Handle unexpected error
-``` 
+    print(f"Create failed: {e}")
+except ValueError as e:
+    # Invalid constructor arguments, for example vcpu=0
+    print(f"Invalid configuration: {e}")
+```
+
+Some methods return a message string instead of raising, for example `"IP address 172.16.0.2 is already in use"`. Check the return value of `create()`.
