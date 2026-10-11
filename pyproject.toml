@@ -32,6 +32,9 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
 ]
 
+[project.urls]
+Homepage = "https://github.com/hysnsec/firecracker-python"
+
 [project.scripts]
 firecracker-check = "firecracker.scripts:check_firecracker_binary"
 
