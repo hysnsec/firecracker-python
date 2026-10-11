@@ -11,9 +11,9 @@ This script shows how to:
 
 Requirements:
 - Firecracker binary installed at /usr/local/bin/firecracker
-- Kernel file: ./firecracker-files/vmlinux-5.10.204
+- Kernel file: ./firecracker-files/vmlinux
 - Rootfs file: ./firecracker-files/rootfs.img
-- SSH key: ./ssh_keys/ubuntu-24.04
+- SSH key: ./ssh_keys/ubuntu-22.04
 - IP forwarding enabled on host
 
 Enable IP forwarding:
@@ -175,7 +175,7 @@ def main():
     print_section("Firecracker Python Sample Script")
 
     # Configuration
-    KERNEL_FILE = "./firecracker-files/vmlinux-6.1.159"
+    KERNEL_FILE = "./firecracker-files/vmlinux"
     ROOTFS_FILE = "./firecracker-files/rootfs.img"
     SSH_KEY = "./ssh_keys/ubuntu-22.04"
 

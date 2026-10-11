@@ -113,7 +113,7 @@ def check_kernel():
     """Check kernel file."""
     print("\n🐧 Checking Kernel...")
 
-    kernel_path = "firecracker-files/vmlinux-6.1.159"
+    kernel_path = "firecracker-files/vmlinux"
     return check_file(kernel_path, "Firecracker Kernel", should_be_executable=True)
 
 

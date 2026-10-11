@@ -1,103 +1,89 @@
-# Firecracker Ubuntu 24.04 Rootfs Setup
+# Firecracker Kernel and Rootfs Setup
 
-This document describes the setup process for creating a Firecracker-compatible Ubuntu 24.04 rootfs image.
+The script `assets/rootfs/setup-firecracker-official.sh` downloads a guest kernel and an Ubuntu rootfs from the official Firecracker CI bucket. It then prepares the rootfs so that you can log in over SSH as `root`.
 
-## Files Created
+Use this setup if you want a working kernel and rootfs pair quickly. To build a rootfs from your own Docker image instead, see [Build a rootfs from a Docker image](docs/rootfs.md).
 
-- [`assets/rootfs/ubuntu-24.04.dockerfile`](assets/rootfs/ubuntu-24.04.dockerfile) - Dockerfile for building Ubuntu 24.04 rootfs
-- [`ssh_keys/ubuntu-24.04`](ssh_keys/ubuntu-24.04) - SSH private key for root access
-- [`ssh_keys/ubuntu-24.04.pub`](ssh_keys/ubuntu-24.04.pub) - SSH public key
-- [`assets/rootfs/setup-firecracker-ubuntu24.sh`](assets/rootfs/setup-firecracker-ubuntu24.sh) - Setup script to complete the rootfs image
-- `firecracker-files/rootfs.tar` - Root filesystem tarball (generated)
-- `firecracker-files/rootfs.img` - 10GB ext4 filesystem image (generated, after running setup script)
-- `firecracker-files/vmlinux-5.10.204` - Firecracker kernel (downloaded, after running setup script)
+## Requirements
 
-## Setup Steps
+- Linux on x86_64 or aarch64
+- `sudo` access
+- `curl`, `wget`, GNU `grep` (the script uses `grep -P`), `unsquashfs` (from `squashfs-tools`), `ssh-keygen` and `mkfs.ext4`
+- Network access to `github.com` and `s3.amazonaws.com`
 
-### 1. Build Docker Image
+## Run the script
 
-Build the Docker image with the following command:
+Run it from any directory. The script changes to the project root first.
+
 ```bash
-docker build -t ubuntu-24.04 -f assets/rootfs/ubuntu-24.04.dockerfile .
+./assets/rootfs/setup-firecracker-official.sh
 ```
 
-### 2. Download Kernel and Complete Rootfs Setup
+The script does these steps:
 
-Run the setup script to mount and extract the rootfs:
-```bash
-./assets/rootfs/setup-firecracker-ubuntu24.sh
-```
+1. Finds the latest Firecracker release and uses its CI version, for example `v1.12`.
+2. Downloads the newest guest kernel for that CI version and your CPU architecture.
+3. Downloads the newest Ubuntu squashfs rootfs for that CI version.
+4. Creates the SSH key `ssh_keys/ubuntu-22.04` if it does not exist, and adds its public key to `/root/.ssh/authorized_keys` in the rootfs.
+5. Installs `openssh-server` and a few network tools inside the rootfs with `chroot`, and allows key-based root login.
+6. Writes `nameserver 1.1.1.1` to `/etc/resolv.conf` in the rootfs.
+7. Packs the result into a 10 GB ext4 image.
 
-This script will:
-- Mount the ext4 image
-- Extract the rootfs tarball
-- Configure DNS resolution
-- Unmount the filesystem
+## Files the script creates
 
-### 3. Enable IP Forwarding
+| File | Purpose |
+|---|---|
+| `firecracker-files/vmlinux` | Guest kernel |
+| `firecracker-files/rootfs.img` | 10 GB ext4 root filesystem |
+| `ssh_keys/ubuntu-22.04` | SSH private key for `root` |
+| `ssh_keys/ubuntu-22.04.pub` | SSH public key |
 
-To enable networking for the Firecracker VM:
+The key is named `ubuntu-22.04` for historical reasons. The Ubuntu version inside the rootfs depends on what the Firecracker CI bucket provides.
+
+If `firecracker-files/vmlinux` already exists, the script keeps it. It always rebuilds `rootfs.img`.
+
+## Enable IP forwarding
+
+The microVM needs IP forwarding on the host to reach the internet:
+
 ```bash
 sudo sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
 sudo iptables -P FORWARD ACCEPT
 ```
 
-## Using with firecracker-python SDK
-
-Once the setup is complete, you can use the rootfs with the firecracker-python SDK:
+## Use the files with firecracker-python
 
 ```python
 from firecracker import MicroVM
 
-# Create a VM with the Ubuntu 24.04 rootfs and kernel
-vm = MicroVM(kernel_file='./firecracker-files/vmlinux-5.10.204', base_rootfs='./firecracker-files/rootfs.img')
+vm = MicroVM(
+    kernel_file="./firecracker-files/vmlinux",
+    base_rootfs="./firecracker-files/rootfs.img",
+)
 vm.create()
 
-# Connect to the VM using SSH
-vm.connect(key_path='./ssh_keys/ubuntu-24.04')
+vm.connect(key_path="./ssh_keys/ubuntu-22.04")
 ```
 
-Or use the sample script:
+You can also run the sample script, which uses the same paths:
+
 ```bash
 ./examples/sample.py
 ```
 
-## Dockerfile Details
+To check the files before you start a VM, run:
 
-The [`assets/rootfs/ubuntu-24.04.dockerfile`](assets/rootfs/ubuntu-24.04.dockerfile) includes:
-- Ubuntu 24.04 base image
-- SSH server configuration
-- Systemd and init packages
-- Network tools (net-tools, iproute2, iputils-ping)
-- DNS utilities (dnsutils)
-- Cloud-init support
-- Text editors (nano, vim)
-- SSH public key for root access
-
-## Kernel Information
-
-The setup script downloads the Firecracker kernel from the official S3 bucket:
-- **Kernel URL**: `https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/${ARCH}/vmlinux-5.10.204`
-- **Kernel Version**: Linux 5.10.204
-- **Architecture**: Automatically detected based on your system (x86_64, aarch64, etc.)
-- **Kernel File**: `./firecracker-files/vmlinux-5.10.204`
-
-The kernel is compatible with Firecracker v1.7 and is pre-compiled for use with microVMs.
-
-## Notes
-
-- The rootfs image is 10GB in size
-- The default SSH key is [`ssh_keys/ubuntu-24.04`](ssh_keys/ubuntu-24.04) (private key)
-- DNS is configured to use Google's DNS (8.8.8.8)
-- The root user can login via SSH using the provided key
+```bash
+python3 verify-setup.py
+```
 
 ## Troubleshooting
 
-If you encounter permission issues during setup, ensure you have sudo access.
-
-If the mount point already exists, the script will handle it automatically.
+- **Permission errors.** The script uses `sudo` for `chroot`, `mount` and `mkfs.ext4`. Run it as a user with `sudo` access.
+- **The script stops after a failed command.** The script uses `set -e`. On exit, it unmounts the bind mounts it created under `firecracker-files/squashfs-root`.
+- **SSH times out.** The first boot can take a minute. Check the VM log at `/var/lib/firecracker/<VM_ID>/logs/<VM_ID>.log`.
 
 ## References
 
-- [Firecracker Getting Started Guide](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md)
-- [firecracker-python Documentation](docs/getting-started.md)
+- [Firecracker getting started guide](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md)
+- [firecracker-python getting started guide](docs/getting-started.md)

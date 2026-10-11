@@ -31,6 +31,14 @@ This script will:
 - Set up SSH keys for root access
 - Create a properly configured ext4 filesystem
 
+It creates these files:
+
+- `firecracker-files/vmlinux` (kernel)
+- `firecracker-files/rootfs.img` (rootfs)
+- `ssh_keys/ubuntu-22.04` (SSH private key)
+
+See [FIRECRACKER_SETUP.md](FIRECRACKER_SETUP.md) for details.
+
 ## Enable Networking
 
 Enable IP forwarding for Firecracker VMs:
@@ -78,26 +86,15 @@ Check that your VM is running:
 ```bash
 # List all running VMs
 python3 -c "from firecracker import MicroVM; vms = MicroVM.list(); [print(f\"{v['id']}: {v['ip_addr']} ({v['state']})\") for v in vms]"
-
-# Check VM status
-./examples/sample.py | grep "VM Status"
 ```
 
 ## Connect to VM
 
-The sample script will provide instructions, or you can connect directly:
+The sample script asks if you want to connect. Answer `y` to open an SSH session.
+
+To connect yourself, use the key that the setup script created:
 
 ```bash
-# Using the sample script (automatic SSH connection)
-./examples/sample.py
-# Answer 'y' when prompted to connect
-
-# Or connect manually using the SSH key
-# Note: The key could be at either location depending on setup:
-#   - ssh_keys/ubuntu-22.04 (if key generated fresh)
-#   - firecracker-files/ubuntu-22.04.id_rsa (if moved by setup script)
-# Both have the same private key
-
 ssh -i ./ssh_keys/ubuntu-22.04 root@<VM_IP_ADDRESS>
 ```
 
