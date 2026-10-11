@@ -1,308 +1,342 @@
-# Firecracker Python API Reference
+# API Reference
 
-This document provides detailed information about the Firecracker Python SDK API, including classes, methods, and usage examples.
+This page describes the public API of firecracker-python. The main entry point is the `MicroVM` class.
+
+```python
+from firecracker import MicroVM
+```
 
 ## MicroVM
 
-The primary class for managing Firecracker microVMs.
+`MicroVM` describes one microVM. Use it to build a rootfs, create the VM, and manage it after it starts.
+
+You can also use a `MicroVM` object to manage VMs that already exist. Pass their ID to methods such as `delete(id=...)` or `connect(id=...)`. For these calls, `MicroVM()` without arguments is enough.
 
 ### Constructor
 
 ```python
-MicroVM(name=None, kernel_file=None, base_rootfs=None, rootfs_url=None, 
-        vcpu=None, mem_size_mib=None, ip_addr=None, bridge=None, 
-        bridge_name=None, mmds_enabled=None, mmds_ip=None, labels=None, 
-        working_dir='/root', expose_ports=None, host_port=None, 
-        dest_port=None, verbose=False)
+MicroVM(
+    name=None,
+    kernel_file=None,
+    kernel_url=None,
+    initrd_file=None,
+    init_file=None,
+    image=None,
+    base_rootfs=None,
+    rootfs_size=None,
+    rootfs_format=None,
+    overlayfs=False,
+    overlayfs_file=None,
+    vcpu=None,
+    memory=None,
+    ip_addr=None,
+    mmds_enabled=None,
+    mmds_ip=None,
+    user_data=None,
+    user_data_file=None,
+    labels=None,
+    expose_ports=False,
+    host_port=None,
+    dest_port=None,
+    vsock_enabled=False,
+    vsock_guest_cid=None,
+    verbose=False,
+    level="INFO",
+)
 ```
 
-#### Parameters
+The constructor always generates a random 8-character ID. You cannot choose the ID. Use `name` to give the VM a readable name.
 
-- `name` (str, optional): Custom name for the microVM. If not provided, a random name will be generated.
-- `kernel_file` (str, optional): Path to the kernel file to use. Defaults to configuration setting.
-- `base_rootfs` (str, optional): Path to the base rootfs file. Defaults to configuration setting.
-- `rootfs_url` (str, optional): URL to download a rootfs image from.
-- `vcpu` (int, optional): Number of virtual CPUs to allocate. Defaults to configuration setting.
-- `mem_size_mib` (int, optional): Memory size in MiB. Defaults to configuration setting.
-- `ip_addr` (str, optional): IP address for the microVM. Defaults to configuration setting.
-- `bridge` (bool, optional): Whether to use a bridge for networking. Defaults to configuration setting.
-- `bridge_name` (str, optional): Name of the bridge interface. Defaults to configuration setting.
-- `mmds_enabled` (bool, optional): Whether to enable MMDS (Microvm Metadata Service). Defaults to configuration setting.
-- `mmds_ip` (str, optional): IP address for MMDS. Defaults to configuration setting.
-- `labels` (dict, optional): Labels for the microVM.
-- `working_dir` (str, optional): Working directory for the microVM. Defaults to `/root`.
-- `expose_ports` (bool, optional): Whether to expose ports. Defaults to configuration setting.
-- `host_port` (int, optional): Host port for port forwarding.
-- `dest_port` (int, optional): Destination port for port forwarding.
-- `verbose` (bool, optional): Enable verbose logging. Defaults to `False`.
+The constructor connects to the local Docker daemon, so Docker must be running.
 
-### Static Methods
+#### Kernel and boot
 
-#### `list()`
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `kernel_file` | str | `None` | Path to the guest kernel. **Required by `create()`.** |
+| `kernel_url` | str | `None` | URL to download the kernel from. The file is saved to `kernel_file`, so you must pass both. The download is skipped if `kernel_file` already exists. |
+| `initrd_file` | str | `None` | Path to an initrd. The file must exist when you create the object. When set, the rootfs drive is not marked as the root device. |
+| `init_file` | str | `"/sbin/init"` | Path of the init program inside the guest. It is passed to the kernel only when `mmds_enabled` or `overlayfs` is set. |
 
-Lists all running Firecracker VMs.
+#### Root filesystem
 
-**Returns:**
-- `List[Dict]`: A list of dictionaries containing microVM details.
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `base_rootfs` | str | `None` | Path to the rootfs image. **Required by `create()`.** `create()` copies it into the VM directory, so the original stays unchanged. |
+| `image` | str | `None` | Docker image to build the rootfs from with `build()`. Requires `base_rootfs`. The constructor checks that the image exists and pulls it if it is not local. |
+| `rootfs_size` | str | `"5G"` | Size of the image that `build()` creates. Any size that `fallocate -l` accepts. |
+| `rootfs_format` | str | `"ext4"` | File system that `build()` creates: `"ext3"`, `"ext4"` or `"xfs"`. Other values raise `ValueError`. |
+| `overlayfs` | bool | `False` | Attach `base_rootfs` read-only and a second writable drive for an overlay. See [Overlayfs](advanced.md#overlayfs). |
+| `overlayfs_file` | str | `None` | Path to the writable overlay drive. Defaults to `/var/lib/firecracker/<id>/rootfs/overlayfs.<rootfs_format>`. The library does not create this file. |
 
-**Example:**
+#### Resources
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `name` | str | random | Name of the VM. Also used as the guest hostname. |
+| `vcpu` | int | `1` | Number of vCPUs. Must be a positive integer. A float raises `ValueError`. |
+| `memory` | int or str | `512` | Memory in MiB. Accepts a number (`1024`), or a string with `M` or `G` (`"512M"`, `"2G"`). Values below 128 MiB are raised to 128 MiB. |
+| `labels` | dict | `{}` | Key-value labels. Stored in the VM's `config.json`. Use them with `find()`. |
+
+#### Network
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `ip_addr` | str | `"172.16.0.2"` | IPv4 address of the guest. The host side of the TAP device gets the `.1` address of the same `/24`. See [Network](network.md). |
+| `expose_ports` | bool | `False` | Forward host ports to the guest when `create()` runs. Requires `host_port` and `dest_port`. |
+| `host_port` | int, list or str | `None` | Host port or ports. A string can hold comma-separated ports, for example `"8080,8443"`. |
+| `dest_port` | int, list or str | `None` | Guest port or ports. Must have the same number of entries as `host_port`. |
+
+#### Metadata and vsock
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `mmds_enabled` | bool | `False` | Enable the MicroVM Metadata Service (MMDS), version 2. See [MMDS](advanced.md#mmds-and-user-data). |
+| `mmds_ip` | str | `"169.254.169.254"` | IPv4 address of MMDS inside the guest. |
+| `user_data` | str | `None` | Text stored in MMDS at `latest/user-data`. The library does not run it. |
+| `user_data_file` | str | `None` | Path to a file to read `user_data` from. You cannot pass both `user_data` and `user_data_file`. |
+| `vsock_enabled` | bool | `False` | Attach a vsock device. See [Vsock](advanced.md#vsock). |
+| `vsock_guest_cid` | int | `3` | Context ID (CID) of the guest on the vsock device. |
+
+#### Logging
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `verbose` | bool | `False` | Print progress messages. |
+| `level` | str | `"INFO"` | Log level, for example `"DEBUG"`. |
+
+### Errors
+
+Most methods wrap failures in `firecracker.exceptions.VMMError`. Some methods return a message string instead of raising an error, for example when a VM ID does not exist. The table under each method shows the return value.
+
+## Static methods
+
+### `MicroVM.list()`
+
+Lists the VMs that have a `config.json` file and a running Firecracker process.
+
+**Returns:** `list[dict]`. Each entry has these keys:
+
+| Key | Description |
+|---|---|
+| `id` | VM ID |
+| `name` | VM name |
+| `pid` | Process ID of Firecracker |
+| `ip_addr` | Guest IP address |
+| `state` | `"Running"` or `"Paused"` |
+| `created_at` | Creation time |
+| `ports` | Forwarded ports, for example `{"22/tcp": [{"HostPort": 10222, "DestPort": 22}]}` |
+| `labels` | Labels |
+
 ```python
-from firecracker import MicroVM
-
-# List all running microVMs
-vms = MicroVM.list()
-print(vms)
+for info in MicroVM.list():
+    print(info["id"], info["ip_addr"], info["state"])
 ```
 
-### Instance Methods
+## Instance methods
 
-#### `create()`
+In the methods below, `id` defaults to the ID of the current object.
 
-Creates a new microVM and configures it.
+### `build()`
 
-**Returns:**
-- `dict`: Status of the creation operation.
+Builds the rootfs image at `base_rootfs` from the Docker image in `image`. See [Build a rootfs from a Docker image](rootfs.md) for the full guide.
 
-**Example:**
+**Returns:** `str`. `"Rootfs built at <base_rootfs>"`, or `"No Docker image specified for building rootfs"` if `image` is not set.
+
+**Raises:** `VMMError` if the build fails.
+
 ```python
-from firecracker import MicroVM
-
-# Create a new microVM with default settings
-vm = MicroVM()
+vm = MicroVM(
+    image="my-rootfs:latest",
+    base_rootfs="/var/lib/firecracker/rootfs.img",
+    kernel_file="./firecracker-files/vmlinux",
+)
+vm.build()
 vm.create()
 ```
 
-#### `find(state=None, labels=None)`
+Call `build()` before `create()`. `create()` does not build the image for you.
 
-Finds a microVM by state or labels.
+### `create(snapshot=False, memory_path=None, snapshot_path=None, rootfs_path=None)`
 
-**Parameters:**
-- `state` (str, optional): State of the microVM to find.
-- `labels` (dict, optional): Labels to filter microVMs by.
+Starts Firecracker, configures the VM and boots it.
 
-**Returns:**
-- `str`: ID of the found microVM or error message.
+| Parameter | Description |
+|---|---|
+| `snapshot` | If `True`, load the VM from a snapshot instead of booting it. |
+| `memory_path` | Path to the snapshot memory file. Required when `snapshot=True`. |
+| `snapshot_path` | Path to the snapshot state file. Required when `snapshot=True`. |
+| `rootfs_path` | Rootfs to use when loading a snapshot. Overrides the path saved in the snapshot. |
 
-**Example:**
+`kernel_file` and `base_rootfs` must point to existing files, also when you load a snapshot.
+
+**Returns:** `str`. One of:
+
+- `"VMM <id> created"`
+- `"VMM <id> failed to create"`
+- `"VMM with ID <id> already exists"`
+- `"IP address <ip> is already in use"`
+
+**Raises:** `VMMError` if a step fails.
+
 ```python
-from firecracker import MicroVM
-
-vm = MicroVM()
-# Find all running microVMs with label "env=prod"
-vm.find(state="running", labels={"env": "prod"})
-```
-
-#### `config(id=None)`
-
-Gets the configuration for the current microVM or a specific microVM.
-
-**Parameters:**
-- `id` (str, optional): ID of the microVM to query. If not provided, uses the current microVM's ID.
-
-**Returns:**
-- `dict`: Response from the microVM configuration endpoint or error message.
-
-**Example:**
-```python
-from firecracker import MicroVM
-
-vm = MicroVM()
-# Get configuration for the current microVM
-config = vm.config()
-print(config)
-```
-
-#### `inspect(id=None)`
-
-Inspects a microVM by ID.
-
-**Parameters:**
-- `id` (str, optional): ID of the microVM to inspect. If not provided, uses the current microVM's ID.
-
-**Returns:**
-- `dict`: Detailed information about the microVM.
-
-**Example:**
-```python
-from firecracker import MicroVM
-
-vm = MicroVM()
+vm = MicroVM(
+    kernel_file="./firecracker-files/vmlinux",
+    base_rootfs="./firecracker-files/rootfs.img",
+)
 vm.create()
-# Inspect the current microVM
-details = vm.inspect()
-print(details)
 ```
 
-#### `status(id=None)`
+See [Snapshots](snapshots.md) for the snapshot flow.
 
-Gets the status of the current microVM or a specific microVM.
+### `snapshot(id=None, action=None, memory_path=None, snapshot_path=None, rootfs_path=None)`
 
-**Parameters:**
-- `id` (str, optional): ID of the microVM to check. If not provided, uses the current microVM's ID.
+Creates or loads a snapshot.
 
-**Returns:**
-- `str`: Status message indicating whether the microVM is running or paused.
+| `action` | Behavior |
+|---|---|
+| `"create"` | Pauses the VM, writes the snapshot, and resumes the VM. |
+| `"load"` | Loads a snapshot into a new Firecracker process. Use `create(snapshot=True, ...)` instead of calling this directly. |
 
-**Example:**
+`memory_path` and `snapshot_path` default to `/var/lib/firecracker/snapshots/<id>/memory` and `/var/lib/firecracker/snapshots/<id>/snapshot`.
+
+**Raises:** `VMMError`. Any other `action` value also raises `VMMError`.
+
 ```python
-from firecracker import MicroVM
-
-vm = MicroVM()
-vm.create()
-# Check status of the current microVM
-status = vm.status()
-print(status)
+vm.snapshot(action="create")
 ```
 
-#### `pause(id=None)`
+### `find(state=None, labels=None)`
 
-Pauses the current microVM or a specific microVM.
+Finds VMs with a given state and labels.
 
-**Parameters:**
-- `id` (str, optional): ID of the microVM to pause. If not provided, uses the current microVM's ID.
+| Parameter | Description |
+|---|---|
+| `state` | `"Running"` or `"Paused"`. The value is case-sensitive. |
+| `labels` | Dict of labels. A VM matches only if it has all of them. |
 
-**Returns:**
-- `str`: Status message indicating the result of the pause operation.
+**Returns:** `list[dict]` with the keys `id`, `name`, `state` and `created_at`. Returns `"No state provided"` if `state` is empty.
 
-**Example:**
 ```python
-from firecracker import MicroVM
-
 vm = MicroVM()
-vm.create()
-# Pause the current microVM
-vm.pause()
+vm.find(state="Running", labels={"env": "prod"})
 ```
 
-#### `resume(id=None)`
+### `config(id=None)`
 
-Resumes the current microVM or a specific microVM.
+Returns the live VM configuration from the Firecracker API (`GET /vm/config`).
 
-**Parameters:**
-- `id` (str, optional): ID of the microVM to resume. If not provided, uses the current microVM's ID.
+**Returns:** `dict`.
 
-**Returns:**
-- `str`: Status message indicating the result of the resume operation.
+### `inspect(id=None)`
 
-**Example:**
+Returns the contents of `/var/lib/firecracker/<id>/config.json`.
+
+**Returns:** `dict`, or `"VMM ID not exist"` if the file does not exist.
+
+### `status(id=None)`
+
+**Returns:** `str`. `"VMM <id> is running"` or `"VMM <id> is paused"`.
+
+### `pause(id=None)` and `resume(id=None)`
+
+Pauses or resumes the VM through the Firecracker API.
+
+**Returns:** `str`. `"VMM <id> paused successfully"` or `"VMM <id> resumed successfully"`.
+
+### `delete(id=None, all=False)`
+
+Stops the VM and removes its TAP device, nftables rules, port forwards and directory.
+
+| Parameter | Description |
+|---|---|
+| `id` | ID of the VM to delete. |
+| `all` | If `True`, delete every VM and clean up orphaned TAP devices. |
+
+**Returns:** `str`. One of:
+
+- `"VMM <id> is deleted"`
+- `"All VMMs and orphaned resources are deleted"`
+- `"VMM with ID <id> not found"`
+- `"No VMMs available to delete"`. In this case nothing is cleaned, also with `all=True`. See [Cleanup](cleanup.md).
+
 ```python
-from firecracker import MicroVM
-
-vm = MicroVM()
-vm.create()
-vm.pause()
-# Resume the current microVM
-vm.resume()
+MicroVM().delete(id="abcd1234")
+MicroVM().delete(all=True)
 ```
 
-#### `delete(id=None, all=False)`
+### `connect(id=None, username=None, key_path=None)`
 
-Deletes the current microVM or a specific microVM, or all microVMs if `all` is `True`.
+Opens an interactive SSH session to the guest. The call returns when the session ends.
 
-**Parameters:**
-- `id` (str, optional): ID of the microVM to delete. If not provided, uses the current microVM's ID.
-- `all` (bool, optional): If `True`, deletes all microVMs. Defaults to `False`.
+| Parameter | Description |
+|---|---|
+| `username` | SSH user. Defaults to `root`. |
+| `key_path` | Path to the SSH private key. **Required.** |
 
-**Returns:**
-- `str`: Status message indicating the result of the delete operation.
+The library makes up to 3 connection attempts, 2 seconds apart.
 
-**Example:**
+**Returns:** `None` when the session closes. Returns a message string if `key_path` is missing or the VM does not exist.
+
 ```python
-from firecracker import MicroVM
-
-# Delete a specific microVM
-vm = MicroVM()
-vm.create()
-vm.delete()
-
-# Delete all microVMs
-vm = MicroVM()
-vm.delete(all=True)
+vm.connect(key_path="./ssh_keys/ubuntu-22.04")
 ```
 
-#### `connect(id=None, username=None, key_path=None)`
+### `port_forward(id=None, host_port=None, dest_port=None, remove=False)`
 
-Connects to the microVM via SSH.
+Adds or removes TCP port forwards from the host to the guest.
 
-**Parameters:**
-- `id` (str, optional): ID of the microVM to connect to. If not provided, uses the current microVM's ID.
-- `username` (str, optional): Username to use for SSH connection. Defaults to `root`.
-- `key_path` (str, optional): Path to the SSH private key.
+| Parameter | Description |
+|---|---|
+| `host_port` | Host port, or a list of ports. |
+| `dest_port` | Guest port, or a list of ports. Must have the same length as `host_port`. |
+| `remove` | If `True`, remove the forwards instead of adding them. |
 
-**Example:**
+**Returns:** `str`. `"Port forwarding added successfully for VMM <id>"` or `"Port forwarding removed successfully for VMM <id>"`.
+
 ```python
-from firecracker import MicroVM
-
-vm = MicroVM()
-vm.create()
-# Connect to the microVM via SSH
-vm.connect(key_path="/path/to/private/key")
-```
-
-#### `port_forward(id=None, host_port=None, dest_port=None, remove=False)`
-
-Sets up or removes port forwarding for the microVM.
-
-**Parameters:**
-- `id` (str, optional): ID of the microVM. If not provided, uses the current microVM's ID.
-- `host_port` (int, optional): Host port for port forwarding.
-- `dest_port` (int, optional): Destination port inside the microVM.
-- `remove` (bool, optional): If `True`, removes the port forwarding rule. Defaults to `False`.
-
-**Example:**
-```python
-from firecracker import MicroVM
-
-vm = MicroVM()
-vm.create()
-# Forward host port 8080 to port 80 in the microVM
 vm.port_forward(host_port=8080, dest_port=80)
-
-# Remove the port forwarding rule
 vm.port_forward(host_port=8080, dest_port=80, remove=True)
 ```
 
-## Api
+## Exceptions
 
-The API client for interacting with the Firecracker HTTP API.
+All exceptions are in `firecracker.exceptions` and inherit from `FirecrackerError`.
 
-### Constructor
+| Exception | Raised for |
+|---|---|
+| `FirecrackerError` | Base class |
+| `VMMError` | VM operations. Most `MicroVM` methods raise this. |
+| `ConfigurationError` | Invalid configuration, or a failed Firecracker configuration call |
+| `NetworkError` | TAP device, nftables or IP address errors |
+| `APIError` | Errors from the Firecracker HTTP API |
+| `ProcessError` | Errors when starting or stopping the Firecracker process |
 
-```python
-Api(socket_path)
-```
-
-#### Parameters
-
-- `socket_path` (str): Path to the Firecracker API socket.
-
-## Logger
-
-A logger for the Firecracker module.
-
-### Constructor
+`MicroVM` wraps most errors in `VMMError`. Catch `VMMError` first.
 
 ```python
-Logger(level="INFO", verbose=False)
+from firecracker.exceptions import VMMError
+
+try:
+    vm.create()
+except VMMError as e:
+    print(f"Create failed: {e}")
 ```
 
-#### Parameters
+## Other classes
 
-- `level` (str, optional): Logging level. Defaults to "INFO".
-- `verbose` (bool, optional): Enable verbose logging. Defaults to `False`.
+These classes are exported but mostly used inside the library.
 
-## NetworkManager
+| Class | Import | Purpose |
+|---|---|---|
+| `Api` | `from firecracker import Api` | HTTP client for the Firecracker API socket. `Api(socket_file, timeout=5)`. |
+| `Logger` | `from firecracker import Logger` | Logger used by the library. `Logger(level="INFO", verbose=False)`. |
+| `NetworkManager` | `from firecracker.network import NetworkManager` | TAP devices, nftables rules and port forwards. See [Network](network.md). |
+| `VMMManager` | `from firecracker.vmm import VMMManager` | VM directories, `config.json` and cleanup. |
+| `ProcessManager` | `from firecracker.process import ProcessManager` | Starts and stops the Firecracker process. |
 
-Manages network interfaces for microVMs.
+## Command-line tools
 
-## ProcessManager
-
-Manages processes for microVMs.
-
-## VMMManager
-
-Manages Virtual Machine Monitors (VMMs).
-
-## Scripts
-
-Helper scripts for common tasks. 
+| Command | Purpose |
+|---|---|
+| `firecracker-check` | Checks that the Firecracker binary exists at `/usr/local/bin/firecracker` and is executable. |

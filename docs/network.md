@@ -1,297 +1,149 @@
-# Firecracker Python Network Documentation
+# Network
 
-This document provides detailed information about the networking capabilities of the Firecracker Python SDK.
+Each microVM gets one TAP device on the host and a static IPv4 address. The library sets up NAT so the guest can reach the internet, and it can forward host ports to the guest.
 
-## Overview
+## How networking works
 
-The Firecracker Python SDK provides networking functionality for microVMs through the `NetworkManager` class. This class allows you to create and manage tap devices, set up NAT rules, forward ports, and more.
+When `create()` runs, the library does these steps:
+
+1. Creates a TAP device named `tap_<id>`, where `<id>` is the VM's random 8-character ID.
+2. Assigns the gateway address to the TAP device. The gateway is the `.1` address of the guest's `/24`. For the default guest IP `172.16.0.2`, the gateway is `172.16.0.1`.
+3. Adds nftables rules in the `ip nat` and `ip filter` tables. A masquerade rule on the host's default-route interface gives the guest internet access.
+4. Passes the address to the guest kernel with the `ip=` boot argument. The guest's `eth0` gets its address at boot, so you do not need DHCP or manual setup in the guest.
+
+The boot argument has this form:
+
+```
+ip=<guest_ip>::<gateway_ip>:255.255.255.0:<name>:eth0:on
+```
+
+The netmask is always `255.255.255.0`. The VM `name` becomes the guest hostname.
+
+## Host requirements
+
+- Run as root. The library creates TAP devices with pyroute2 and changes nftables rules.
+- Install the `python3-nftables` module. Without it, the library skips the NAT rules, and the guest has no internet access. In verbose mode, it logs a warning.
+- Enable IP forwarding:
+
+  ```bash
+  sudo sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
+  sudo iptables -P FORWARD ACCEPT
+  ```
+
+## Set the guest IP address
+
+```python
+from firecracker import MicroVM
+
+vm = MicroVM(
+    kernel_file="./firecracker-files/vmlinux",
+    base_rootfs="./firecracker-files/rootfs.img",
+    ip_addr="172.16.1.2",
+)
+vm.create()
+```
+
+`create()` returns `"IP address <ip> is already in use"` if another VM uses the same address.
+
+### Give each VM its own subnet
+
+Each TAP device gets the `.1` address of its VM's `/24`. Two VMs in the same `/24` give two TAP devices the same address, and routing on the host breaks.
+
+Use a different third octet for each VM:
+
+| VM | `ip_addr` | Gateway on the host |
+|---|---|---|
+| First | `172.16.0.2` | `172.16.0.1` |
+| Second | `172.16.1.2` | `172.16.1.1` |
+| Third | `172.16.2.2` | `172.16.2.1` |
+
+`examples/sample.py` picks a free subnet this way.
+
+Also make sure the subnet does not overlap a network the host already uses, such as a Docker bridge or your LAN.
+
+## Port forwarding
+
+Port forwarding sends TCP traffic from a host port to a guest port. The rule listens on every local address of the host.
+
+Forward ports when you create the VM:
+
+```python
+vm = MicroVM(
+    kernel_file="./firecracker-files/vmlinux",
+    base_rootfs="./firecracker-files/rootfs.img",
+    expose_ports=True,
+    host_port=[10222, 8080],
+    dest_port=[22, 80],
+)
+vm.create()
+```
+
+Or add and remove them later:
+
+```python
+vm.port_forward(host_port=8080, dest_port=80)
+vm.port_forward(host_port=8080, dest_port=80, remove=True)
+
+# For a VM you did not create in this process
+MicroVM().port_forward(id="abcd1234", host_port=8080, dest_port=80)
+```
+
+Rules:
+
+- Pass the same number of host ports and guest ports.
+- Only TCP is supported.
+- The forwards are stored in the VM's `config.json`. `MicroVM.list()` shows them in the `ports` field.
+- `delete()` removes the forwards of the VM.
 
 ## NetworkManager
 
-The `NetworkManager` class manages all network-related operations for Firecracker microVMs.
-
-### Constructor
+`NetworkManager` is the class that `MicroVM` uses for the steps above. Most users do not need it.
 
 ```python
-NetworkManager(verbose=False, level="INFO")
+from firecracker.network import NetworkManager
+
+nm = NetworkManager(verbose=False, level="INFO")
 ```
 
-#### Parameters
-
-- `verbose` (bool, optional): Enable verbose logging. Defaults to `False`.
-- `level` (str, optional): Logging level. Defaults to "INFO".
-
-### Methods
-
-#### `get_interface_name()`
-
-Gets the name of the network interface.
-
-**Returns:**
-- `str`: Name of the network interface.
-
-**Raises:**
-- `RuntimeError`: If unable to determine the interface name.
-
-#### `get_gateway_ip(ip)`
-
-Derives a gateway IP from a microVM IP by replacing the last octet with 1 for IPv4, or the last segment with 1 for IPv6.
-
-**Parameters:**
-- `ip` (str): IP address to derive gateway IP from.
-
-**Returns:**
-- `str`: Derived gateway IP.
-
-**Raises:**
-- `NetworkError`: If IP address is invalid.
-
-#### `check_bridge_device(bridge_name)`
-
-Checks if a bridge device exists in the system.
-
-**Parameters:**
-- `bridge_name` (str): Name of the bridge device to check.
-
-**Returns:**
-- `bool`: `True` if the device exists, `False` otherwise.
-
-**Raises:**
-- `NetworkError`: If checking the bridge device fails.
-
-#### `check_tap_device(tap_device_name)`
-
-Checks if a tap device exists in the system.
-
-**Parameters:**
-- `tap_device_name` (str): Name of the tap device to check.
-
-**Returns:**
-- `bool`: `True` if the device exists, `False` otherwise.
-
-**Raises:**
-- `NetworkError`: If checking the tap device fails.
-
-#### `add_nat_rules(tap_name, iface_name)`
-
-Creates network rules using nftables Python module.
-
-**Parameters:**
-- `tap_name` (str): Name of the tap device.
-- `iface_name` (str): Name of the interface to be used.
-
-**Raises:**
-- `NetworkError`: If adding NAT forwarding rule fails.
-
-#### `get_nat_rules()`
-
-Gets the current NAT rules.
-
-**Returns:**
-- `list`: List of current NAT rules.
-
-#### `ensure_masquerade(iface_name)`
-
-Ensures that masquerade is set up for the given interface.
-
-**Parameters:**
-- `iface_name` (str): Name of the interface.
-
-**Returns:**
-- `bool`: `True` if masquerade was added, `False` if it already existed.
-
-#### `add_port_forward(host_ip, host_port, dest_ip, dest_port, protocol="tcp")`
-
-Adds port forwarding rules.
-
-**Parameters:**
-- `host_ip` (str): Host IP address.
-- `host_port` (int): Host port.
-- `dest_ip` (str): Destination IP address.
-- `dest_port` (int): Destination port.
-- `protocol` (str, optional): Protocol to use. Defaults to "tcp".
-
-**Returns:**
-- `bool`: `True` if port forwarding was added, `False` if it already existed.
-
-#### `delete_port_forward(host_ip, host_port, dest_ip, dest_port)`
-
-Deletes port forwarding rules.
-
-**Parameters:**
-- `host_ip` (str): Host IP address.
-- `host_port` (int): Host port.
-- `dest_ip` (str): Destination IP address.
-- `dest_port` (int): Destination port.
-
-**Returns:**
-- `bool`: `True` if port forwarding was deleted, `False` if it did not exist.
-
-#### `detect_cidr_conflict(ip_address, prefix_len=24)`
-
-Detects if an IP CIDR range conflicts with existing interfaces.
-
-**Parameters:**
-- `ip_address` (str): IP address to check.
-- `prefix_len` (int, optional): Prefix length. Defaults to 24.
-
-**Returns:**
-- `bool`: `True` if there is a conflict, `False` otherwise.
-
-#### `suggest_non_conflicting_ip(preferred_ip, prefix_len=24)`
-
-Suggests a non-conflicting IP address.
-
-**Parameters:**
-- `preferred_ip` (str): Preferred IP address.
-- `prefix_len` (int, optional): Prefix length. Defaults to 24.
-
-**Returns:**
-- `str`: Non-conflicting IP address.
-
-#### `create_tap(name=None, iface_name=None, gateway_ip=None, bridge=False)`
-
-Creates a tap device.
-
-**Parameters:**
-- `name` (str, optional): Name of the tap device.
-- `iface_name` (str, optional): Name of the interface.
-- `gateway_ip` (str, optional): Gateway IP address.
-- `bridge` (bool, optional): Whether to use a bridge. Defaults to `False`.
-
-**Raises:**
-- `NetworkError`: If creating the tap device fails.
-
-#### `attach_tap_to_bridge(iface_name, bridge_name)`
-
-Attaches a tap device to a bridge.
-
-**Parameters:**
-- `iface_name` (str): Name of the interface.
-- `bridge_name` (str): Name of the bridge.
-
-**Raises:**
-- `NetworkError`: If attaching the tap device to the bridge fails.
-
-#### `delete_tap(name)`
-
-Deletes a tap device.
-
-**Parameters:**
-- `name` (str): Name of the tap device.
-
-**Raises:**
-- `NetworkError`: If deleting the tap device fails.
-
-#### `cleanup(tap_device)`
-
-Cleans up network resources.
-
-**Parameters:**
-- `tap_device` (str): Name of the tap device.
-
-#### `enable_nat_internet_access(tap_name, iface_name, vm_ip)`
-
-Enables NAT for internet access.
-
-**Parameters:**
-- `tap_name` (str): Name of the tap device.
-- `iface_name` (str): Name of the interface.
-- `vm_ip` (str): IP address of the microVM.
-
-**Raises:**
-- `NetworkError`: If enabling NAT fails.
-
-## Network Configuration
-
-When creating a microVM, you can configure various network parameters:
-
-```python
-from firecracker import MicroVM
-
-# Create a microVM with custom network settings
-vm = MicroVM(
-    ip_addr="192.168.100.2",
-    bridge=True,
-    bridge_name="br0"
-)
-
-vm.create()
-```
-
-### Key Network Parameters
-
-- `ip_addr`: IP address for the microVM.
-- `bridge`: Whether to use a bridge for networking.
-- `bridge_name`: Name of the bridge interface.
-
-## Port Forwarding
-
-You can set up port forwarding to expose services running in the microVM:
-
-```python
-from firecracker import MicroVM
-
-vm = MicroVM()
-vm.create()
-
-# Forward host port 8080 to port 80 in the microVM
-vm.port_forward(host_port=8080, dest_port=80)
-```
-
-### Example: Running a Web Server in a microVM
-
-```python
-from firecracker import MicroVM
-
-# Create a microVM
-vm = MicroVM()
-vm.create()
-
-# Forward host port 8080 to port 80 in the microVM
-vm.port_forward(host_port=8080, dest_port=80)
-
-# Connect to the microVM
-vm.connect(key_path="/path/to/private/key")
-
-# Inside the microVM, install and run a web server
-# Now the web server is accessible from the host at http://localhost:8080
-```
+| Method | Description |
+|---|---|
+| `get_interface_name()` | Returns the host interface of the default route. Raises `RuntimeError` if it cannot find one. |
+| `get_gateway_ip(ip)` | Returns the `.1` address of the `/24` of `ip`. |
+| `setup(tap_name, iface_name, gateway_ip)` | Creates the TAP device if needed, then adds the NAT and masquerade rules. |
+| `create_tap(tap_name=None, iface_name=None, gateway_ip=None)` | Creates a TAP device and assigns `gateway_ip/24`. |
+| `check_tap_device(tap_device_name)` | Returns `True` if the TAP device exists. |
+| `delete_tap(name)` | Deletes a TAP device. |
+| `is_nftables_available()` | Returns `True` if the nftables module loads. |
+| `add_nat_rules(tap_name, iface_name)` | Adds the nftables rules for one TAP device. |
+| `get_nat_rules()` | Returns the rules in the `nat` table. |
+| `create_masquerade(iface_name)` | Adds the masquerade rule if it does not exist. |
+| `get_masquerade_handle()` | Returns the handle of the masquerade rule. |
+| `delete_nat_rules(tap_name)` | Deletes the rules for one TAP device. |
+| `delete_masquerade()` | Deletes the masquerade rule. |
+| `add_port_forward(id, host_ip, host_port, dest_ip, dest_port, protocol="tcp")` | Adds a forward from `host_port` to `dest_ip:dest_port`. `id` is the VM ID, stored in the rule comment. |
+| `delete_port_forward(id, host_port, dest_port)` | Deletes one forward of a VM. |
+| `delete_all_port_forward(id)` | Deletes every forward of a VM. |
+| `detect_cidr_conflict(ip_addr, prefix_len=24)` | Checks if the subnet overlaps a host interface. **Known issue:** today it returns `False` when a conflict exists, which is the opposite of its docstring. Do not rely on it. |
+| `suggest_non_conflicting_ip(preferred_ip, prefix_len=24)` | Tries nearby subnets. It depends on `detect_cidr_conflict()`, so it has the same issue. |
+| `cleanup(tap_device)` | Deletes the NAT rules, masquerade rule, port forwards and TAP device. Each step runs even if an earlier step fails. |
+| `cleanup_orphaned_tap_devices(running_vm_ids)` | Deletes `tap_*` devices whose ID is not in `running_vm_ids`. |
+| `close()` | Releases the netlink socket. |
 
 ## Troubleshooting
 
-### Common Issues
+### The guest has no internet access
 
-1. **IP Address Conflicts**
+1. Check IP forwarding: `cat /proc/sys/net/ipv4/ip_forward` must print `1`.
+2. Check the masquerade rule: `sudo nft list table ip nat`.
+3. Check the TAP device: `ip addr show tap_<id>`. It must have the gateway address and be `UP`.
+4. Check DNS in the guest: `/etc/resolv.conf` must list a name server. `build()` does not add one. See [Build a rootfs](rootfs.md#make-the-image-bootable).
 
-   If you encounter IP address conflicts, you can use the `suggest_non_conflicting_ip` method to find a non-conflicting IP address:
+### Port forwarding does not work
 
-   ```python
-   from firecracker import MicroVM
-   from firecracker.network import NetworkManager
+1. Check that the host port is free: `sudo ss -tlnp | grep <port>`.
+2. Check the rule: `sudo nft list table ip nat`. Look for a comment of the form `machine_id=<id> host_port=<port> vm_port=<port>`.
+3. Check that the service in the guest listens on `0.0.0.0`, not only on `127.0.0.1`.
 
-   network_manager = NetworkManager()
-   non_conflicting_ip = network_manager.suggest_non_conflicting_ip("192.168.100.2")
-   
-   vm = MicroVM(ip_addr=non_conflicting_ip)
-   vm.create()
-   ```
+### Two VMs cannot both reach the network
 
-2. **Unable to Access the Internet from microVM**
-
-   Make sure IP forwarding is enabled on the host:
-
-   ```bash
-   sudo sysctl -w net.ipv4.ip_forward=1
-   sudo iptables -P FORWARD ACCEPT
-   ```
-
-3. **Port Forwarding Not Working**
-
-   Check if the port is already in use on the host:
-
-   ```bash
-   sudo netstat -tulpn | grep <port>
-   ```
-
-   Try a different host port or stop the service using the conflicting port. 
+Both VMs are probably in the same `/24`. See [Give each VM its own subnet](#give-each-vm-its-own-subnet).
