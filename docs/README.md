@@ -1,74 +1,64 @@
-# Firecracker Python SDK Documentation
+# firecracker-python documentation
 
-Welcome to the Firecracker Python SDK documentation! This documentation will help you use the Python SDK to create and manage Firecracker microVMs.
+firecracker-python is a Python library for creating and managing [Firecracker](https://github.com/firecracker-microvm/firecracker) microVMs.
 
-## Table of Contents
+Firecracker is a virtual machine monitor (VMM) that uses the Linux Kernel-based Virtual Machine (KVM). It starts small, isolated virtual machines in a fraction of a second.
 
-- [Getting Started](getting-started.md) - A step-by-step guide to get started with the SDK
-- [API Reference](api-reference.md) - Detailed information about the SDK's API
-- [Configuration](configuration.md) - Configuration options for microVMs
-- [Network](network.md) - Networking capabilities and examples
-- [Cleanup](cleanup.md) - Resource cleanup and orphaned resource management
-- [Examples](examples.md) - Practical examples for using the SDK
+## Start here
 
-## What is Firecracker?
+- [Getting started](getting-started.md): prepare the host, get a kernel and a rootfs, and start your first microVM.
 
-Firecracker is a virtual machine monitor (VMM) that uses the Linux Kernel-based Virtual Machine (KVM) to create and manage secure, multi-tenant container and function-based services. Firecracker was developed at Amazon Web Services to improve the security and resource efficiency of container and function-based services.
+## Guides
 
-This Python SDK provides a simple and intuitive interface for creating and managing Firecracker microVMs.
+- [Build a rootfs from a Docker image](rootfs.md): use `build()` to turn a Docker image into a bootable rootfs.
+- [Network](network.md): TAP devices, IP addresses, NAT and port forwarding.
+- [Snapshots](snapshots.md): save and restore a running microVM.
+- [MMDS, vsock, overlayfs and initrd](advanced.md): optional features.
+- [Cleanup](cleanup.md): what `delete()` removes, and how to clean up after failures.
+- [Examples](examples.md): short recipes for common tasks.
 
-## Key Features
+## Reference
 
-- **Lightweight**: Firecracker microVMs start quickly and use minimal resources
-- **Secure**: Strong isolation boundaries between microVMs
-- **Flexible**: Configure microVMs with different CPU, memory, and network settings
-- **Programmable**: Full control via Python API
+- [API reference](api-reference.md): every `MicroVM` argument and method.
+- [Configuration](configuration.md): defaults and files on disk.
 
-## Quick Start
+## Contributing
 
-Here's a simple example to get started:
+- [Testing in Docker](testing-in-docker.md): run the test suite in a container with KVM access.
+
+## Quick start
 
 ```python
 from firecracker import MicroVM
 
-# Create a microVM with default settings
-vm = MicroVM()
+vm = MicroVM(
+    kernel_file="./firecracker-files/vmlinux",
+    base_rootfs="./firecracker-files/rootfs.img",
+)
 vm.create()
-
-# Connect to the microVM via SSH
-vm.connect(key_path="/path/to/private/key")
+vm.connect(key_path="./ssh_keys/ubuntu-22.04")
 ```
 
-## Documentation Structure
+The setup script `assets/rootfs/setup-firecracker-official.sh` creates these files. See [Getting started](getting-started.md).
 
-- **Getting Started Guide**: Follow this guide to set up your environment and create your first microVM.
-- **API Reference**: Complete documentation of all classes, methods, and parameters.
-- **Configuration**: Learn about all the configuration options available for microVMs.
-- **Network**: Understand how networking works with Firecracker microVMs and how to configure it.
-- **Examples**: See practical examples of how to use the SDK for various use cases.
+## Requirements
 
-## System Requirements
-
-- Linux kernel 4.14 or later
-- KVM enabled
-- Python 3.8 or later
-- The `python3-nftables` module
+- Linux with KVM enabled
+- Python 3.9 or later, with the `python3-nftables` module
+- Docker, running
+- Firecracker at `/usr/local/bin/firecracker`
+- Root access
 
 ## Installation
 
-You can install the Firecracker Python SDK using pip:
-
 ```bash
-pip install firecracker-python
+pip install hysn-firecracker-python
 ```
 
 Or install from source:
 
 ```bash
-git clone https://github.com/myugan/firecracker-python.git
+git clone https://github.com/hysnsec/firecracker-python.git
 cd firecracker-python
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
+uv sync --dev
 ```
