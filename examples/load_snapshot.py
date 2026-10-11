@@ -16,9 +16,9 @@ def load_snapshot_example():
     
     # Initialize MicroVM with required parameters
     microvm = MicroVM(
-        name="devsecops-box",
-        kernel_file="/path/to/vmlinux",
-        base_rootfs="/var/lib/firecracker/devsecops-box.img",
+        name="my-vm",
+        kernel_file="./firecracker-files/vmlinux",
+        base_rootfs="/var/lib/firecracker/my-vm.img",
         vcpu=2,
         memory=2048,
         ip_addr="172.16.0.10",
@@ -29,8 +29,8 @@ def load_snapshot_example():
     # The library will automatically use the correct rootfs path
     result = microvm.create(
         snapshot=True,
-        memory_path="/var/lib/firecracker/snapshots/restuhaqza/devsecops-box-ous03sz1/memory",
-        snapshot_path="/var/lib/firecracker/snapshots/restuhaqza/devsecops-box-ous03sz1/snapshot"
+        memory_path="/var/lib/firecracker/snapshots/<SOURCE_VM_ID>/memory",
+        snapshot_path="/var/lib/firecracker/snapshots/<SOURCE_VM_ID>/snapshot"
     )
     
     print(f"Result: {result}")
@@ -44,9 +44,9 @@ def load_snapshot_with_explicit_rootfs():
     """
     
     microvm = MicroVM(
-        name="devsecops-box",
-        kernel_file="/path/to/vmlinux",
-        base_rootfs="/var/lib/firecracker/devsecops-box-v2.img",  # Different from snapshot
+        name="my-vm",
+        kernel_file="./firecracker-files/vmlinux",
+        base_rootfs="/var/lib/firecracker/my-vm-v2.img",  # Different from snapshot
         vcpu=2,
         memory=2048,
         ip_addr="172.16.0.10",
@@ -56,9 +56,9 @@ def load_snapshot_with_explicit_rootfs():
     # Option 2: Explicitly specify the rootfs path to use
     result = microvm.create(
         snapshot=True,
-        memory_path="/var/lib/firecracker/snapshots/restuhaqza/devsecops-box-ous03sz1/memory",
-        snapshot_path="/var/lib/firecracker/snapshots/restuhaqza/devsecops-box-ous03sz1/snapshot",
-        rootfs_path="/var/lib/firecracker/devsecops-box-v2.img"  # Override the path
+        memory_path="/var/lib/firecracker/snapshots/<SOURCE_VM_ID>/memory",
+        snapshot_path="/var/lib/firecracker/snapshots/<SOURCE_VM_ID>/snapshot",
+        rootfs_path="/var/lib/firecracker/my-vm-v2.img"  # Override the path
     )
     
     print(f"Result: {result}")
@@ -68,11 +68,14 @@ def load_snapshot_with_overlayfs():
     """
     Example of loading a microVM from snapshot with overlayfs configuration.
     The library will automatically use base_rootfs when overlayfs is enabled.
+
+    The library does not create overlayfs_file. Create it before you start
+    the VM, for example with: truncate -s 1G overlay.ext4 && mkfs.ext4 overlay.ext4
     """
     
     microvm = MicroVM(
-        name="devsecops-box",
-        kernel_file="/path/to/vmlinux",
+        name="my-vm",
+        kernel_file="./firecracker-files/vmlinux",
         base_rootfs="/var/lib/firecracker/base-rootfs.img",
         overlayfs=True,
         overlayfs_file="/var/lib/firecracker/overlay.ext4",
@@ -85,24 +88,24 @@ def load_snapshot_with_overlayfs():
     # With overlayfs, the library automatically uses base_rootfs as the rootfs path
     result = microvm.create(
         snapshot=True,
-        memory_path="/var/lib/firecracker/snapshots/restuhaqza/devsecops-box-ous03sz1/memory",
-        snapshot_path="/var/lib/firecracker/snapshots/restuhaqza/devsecops-box-ous03sz1/snapshot"
+        memory_path="/var/lib/firecracker/snapshots/<SOURCE_VM_ID>/memory",
+        snapshot_path="/var/lib/firecracker/snapshots/<SOURCE_VM_ID>/snapshot"
     )
     
     print(f"Result: {result}")
 
 
-def agent_integration_example():
+def application_integration_example():
     """
-    Example of how to integrate this in the udaan-agent code.
-    This shows the typical flow used in the agent.
+    Example of how to load a snapshot from application code.
+    This shows the typical flow.
     """
     
-    # Agent configuration
-    microvm_id = "devsecops-box-ous03sz1"
-    machine_name = "devsecops-box"
-    rootfs_path = "/var/lib/firecracker/devsecops-box.img"
-    snapshot_dir = f"/var/lib/firecracker/snapshots/restuhaqza/{microvm_id}"
+    # Configuration
+    source_vm_id = "<SOURCE_VM_ID>"
+    machine_name = "my-vm"
+    rootfs_path = "/var/lib/firecracker/my-vm.img"
+    snapshot_dir = f"/var/lib/firecracker/snapshots/{source_vm_id}"
     
     try:
         # Initialize MicroVM
@@ -150,9 +153,9 @@ if __name__ == "__main__":
     print("=" * 60)
     # load_snapshot_with_overlayfs()
     
-    print("\n\nExample 4: Agent integration pattern")
+    print("\n\nExample 4: Application integration pattern")
     print("=" * 60)
-    print("This is the recommended pattern for udaan-agent:")
+    print("This is the recommended pattern:")
     print("""
     microvm = MicroVM(
         name=machine_name,

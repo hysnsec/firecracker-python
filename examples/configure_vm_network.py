@@ -2,92 +2,61 @@
 """
 Configure Firecracker VM networking.
 
-This script demonstrates how to create a Firecracker VM and configure its networking
-both automatically (using the modified boot args) and manually (using execute_in_vm).
+This script creates a microVM with a static IP address and forwards a host
+port to its SSH port. The kernel configures eth0 from the ip= boot argument,
+so the guest needs no manual network setup.
+
+Usage:
+    sudo ./examples/configure_vm_network.py            # create a new VM
+    sudo ./examples/configure_vm_network.py <VM_ID>    # add a port to a VM
 """
 
-import time
 import sys
-from firecracker.microvm import MicroVM
+
+from firecracker import MicroVM
 from firecracker.exceptions import VMMError
 
-def create_vm_with_network():
-    """Create a new VM with networking enabled and configured."""
-    print("Creating new VM with networking enabled...")
-    vmm = MicroVM(
-        name="network-test-vm",
-        verbose=True      # Enable verbose logging
-    )
-    
-    # Create the VM
-    result = vmm.create()
-    print(f"VM creation result: {result}")
-    
-    # Get the VM ID
-    vm_id = vmm._microvm_id
-    print(f"VM ID: {vm_id}")
-    
-    # Wait for the VM to boot
-    print("Waiting for VM to boot (10 seconds)...")
-    time.sleep(10)
-    
-    # Try to manually configure network in case auto-config with DHCP fails
-    print("Manually configuring network...")
-    commands = [
-        "ip addr",                                      # Show current addresses
-        "ip addr add 172.16.0.2/24 dev eth0",          # Add IP to eth0
-        "ip link set eth0 up",                          # Bring up eth0
-        "ip route add default via 172.16.0.1 dev eth0", # Add default route
-        "ip addr",                                      # Show updated addresses
-        "ip route"                                      # Show updated routes
-    ]
-    
-    try:
-        vmm.execute_in_vm(commands=commands)
-        print("Network commands executed in VM")
-    except VMMError as e:
-        print(f"Error executing commands: {e}")
-    
-    # Print connection information
-    print("\nVM Network Information:")
-    print("VM IP Address: 172.16.0.2")
-    print("Host Address: 172.16.0.1")
-    print("\nTo connect to the VM using screen:")
-    print(f"  screen -r fc_{vm_id}")
-    print("\nTo detach from the screen session (leave VM running):")
-    print("  Press Ctrl+A then Ctrl+D")
-    
-    return vm_id
+KERNEL_FILE = "./firecracker-files/vmlinux"
+ROOTFS_FILE = "./firecracker-files/rootfs.img"
+SSH_KEY = "./ssh_keys/ubuntu-22.04"
 
-def connect_to_existing_vm(vm_id):
-    """Connect to an existing VM and configure its network."""
-    print(f"Connecting to existing VM {vm_id}...")
-    vmm = MicroVM()
-    
-    # Configure network manually
-    print("Manually configuring network...")
-    commands = [
-        "ip addr add 172.16.0.2/24 dev eth0",
-        "ip link set eth0 up",
-        "ip route add default via 172.16.0.1 dev eth0",
-        "echo 'Network configured'"
-    ]
-    
+
+def create_vm_with_network():
+    """Create a new VM with a static IP and SSH forwarded to host port 10222."""
+    print("Creating new VM with networking enabled...")
+    vm = MicroVM(
+        name="network-test-vm",
+        kernel_file=KERNEL_FILE,
+        base_rootfs=ROOTFS_FILE,
+        ip_addr="172.16.0.2",
+        expose_ports=True,
+        host_port=10222,
+        dest_port=22,
+        verbose=True,
+    )
+
+    print(f"VM creation result: {vm.create()}")
+
+    print("\nVM Network Information:")
+    print("  VM IP address:  172.16.0.2")
+    print("  Host gateway:   172.16.0.1 (on the TAP device)")
+    print("  Forwarded port: host 10222 -> VM 22")
+    print("\nTo connect to the VM via SSH:")
+    print(f"  ssh -i {SSH_KEY} root@172.16.0.2")
+    print(f"  ssh -i {SSH_KEY} -p 10222 root@<HOST_IP>")
+
+
+def add_port_to_existing_vm(vm_id):
+    """Forward host port 8080 to port 80 on an existing VM."""
+    print(f"Adding port forward to existing VM {vm_id}...")
     try:
-        vmm.execute_in_vm(id=vm_id, commands=commands)
-        print("Network commands executed in VM")
+        print(MicroVM().port_forward(id=vm_id, host_port=8080, dest_port=80))
     except VMMError as e:
-        print(f"Error executing commands: {e}")
-    
-    # Print SSH connection info
-    print("\nTo connect to the VM via SSH (once networking is configured):")
-    print("  ssh -i /path/to/your/ssh_key root@172.16.0.2")
+        print(f"Error adding port forward: {e}")
+
 
 if __name__ == "__main__":
-    # Check if VM ID is provided as argument
     if len(sys.argv) > 1:
-        vm_id = sys.argv[1]
-        connect_to_existing_vm(vm_id)
+        add_port_to_existing_vm(sys.argv[1])
     else:
-        # Create new VM
-        vm_id = create_vm_with_network() 
+        create_vm_with_network()

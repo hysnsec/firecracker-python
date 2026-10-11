@@ -3,7 +3,14 @@
 Example: Creating a MicroVM with Different Filesystem Formats
 
 This example demonstrates how to create microVMs with different rootfs filesystem formats.
-The firecracker-python library now supports ext3, ext4, and xfs filesystem formats.
+The firecracker-python library supports ext3, ext4, and xfs filesystem formats.
+
+Run it as root: build() uses fallocate, mkfs and mount. The xfs format also
+needs mkfs.xfs on the host.
+
+build() only copies the files of the Docker image. To boot and log in, the
+image must contain an init system, an SSH server and your public key. Plain
+alpine or ubuntu images build fine but do not give a usable VM.
 """
 
 from firecracker import MicroVM
@@ -80,6 +87,9 @@ vm = MicroVM(
     verbose=True,
 )
 
+# Build the rootfs first. create() does not build it for you.
+print(f"Result: {vm.build()}")
+
 # Create and start the VM
 result = vm.create()
 print(f"Result: {result}")
@@ -92,4 +102,4 @@ print("\nNotes:")
 print("- Supported formats: ext3, ext4, xfs")
 print("- Default format: ext4")
 print("- The filesystem format is validated during initialization")
-print("- Overlayfs also respects the specified format")
+print("- Call build() before create()")
