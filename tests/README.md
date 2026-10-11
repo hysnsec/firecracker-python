@@ -17,7 +17,7 @@ make test-verbose
 uv run pytest tests/test_microvm.py -v
 
 # Run specific test
-uv run pytest tests/test_microvm.py::test_parse_ports_with_integer -v
+uv run pytest tests/test_utils.py::TestPortParsing::test_parse_ports_with_integer -v
 
 # Run tests matching a pattern
 uv run pytest tests/ -k "parse_ports" -v

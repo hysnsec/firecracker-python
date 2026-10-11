@@ -26,7 +26,7 @@ Before working on this project, ensure you have:
 - **Python 3.9+** installed
 - **KVM** enabled on your system (`lsmod | grep kvm`)
 - **Docker** installed and running
-- **Firecracker** binary in `/usr/local/bin/firecracker` or `/usr/bin/firecracker`
+- **Firecracker** binary in `/usr/local/bin/firecracker`
 - **python3-nftables** module installed
 - **uv** package manager (recommended) or pip
 
@@ -34,7 +34,7 @@ Before working on this project, ensure you have:
 
 ```bash
 # Clone the repository
-git clone https://github.com/myugan/firecracker-python.git
+git clone https://github.com/hysnsec/firecracker-python.git
 cd firecracker-python
 
 # Using uv (recommended)
@@ -204,10 +204,8 @@ Coverage reports are generated in `htmlcov/` directory when running `make test-c
 
 ### Working with Firecracker
 
-1. **Firecracker Binary Location**: The library looks for the Firecracker binary at:
-   - `/usr/local/bin/firecracker`
-   - `/usr/bin/firecracker`
-   
+1. **Firecracker Binary Location**: The library starts the binary at `MicroVMConfig.binary_path`, which is `/usr/local/bin/firecracker`. It does not search other paths.
+
    Use `firecracker-check` to verify installation.
 
 2. **KVM Access**: Ensure KVM is enabled:
@@ -229,13 +227,16 @@ Coverage reports are generated in `htmlcov/` directory when running `make test-c
 
 The project supports building rootfs from Docker images:
 
-```bash
-# Build rootfs from Docker image
-vm = MicroVM(image="ubuntu:24.04", base_rootfs="./rootfs.img")
+```python
+# Build rootfs from Docker image (run as root), then create the VM
+vm = MicroVM(image="my-rootfs:latest", base_rootfs="./rootfs.img", kernel_file="./vmlinux")
 vm.build()
+vm.create()
 ```
 
-See [`FIRECRACKER_SETUP.md`](FIRECRACKER_SETUP.md) for detailed setup instructions.
+- `create()` does not call `build()`. Call `build()` first.
+- The image must contain an init system and an SSH server. See [`docs/rootfs.md`](docs/rootfs.md).
+- For the official CI kernel and rootfs, see [`FIRECRACKER_SETUP.md`](FIRECRACKER_SETUP.md).
 
 ### Debugging
 
@@ -259,7 +260,7 @@ The default SSH user is `root`.
 
 ### Terminal Connection Timeout
 
-When spawning a terminal connection to microVMs, the default timeout is **1800000 milliseconds** (30 minutes). This timeout applies to SSH connections and can be configured when needed for long-running operations.
+When you spawn a terminal connection to a microVM from an agent tool, use a timeout of **1800000 milliseconds** (30 minutes) for long-running operations. This is guidance for the tool call. The library itself sets no SSH connection timeout.
 
 ## Security Considerations
 
@@ -312,22 +313,31 @@ firecracker-python/
 │   ├── utils.py          # Utility functions
 │   ├── exceptions.py     # Custom exceptions
 │   └── scripts.py        # CLI scripts
-├── tests/                # Test suite
-│   ├── conftest.py       # Pytest configuration
-│   └── test_microvm.py   # MicroVM tests
-├── docs/                 # Documentation
+├── tests/                # Test suite (conftest.py + test_*.py, see tests/README.md)
+├── docs/                 # Documentation (index: docs/README.md)
 │   ├── getting-started.md
+│   ├── rootfs.md
 │   ├── api-reference.md
 │   ├── configuration.md
+│   ├── network.md
+│   ├── snapshots.md
+│   ├── advanced.md
 │   ├── examples.md
-│   └── network.md
+│   ├── cleanup.md
+│   └── testing-in-docker.md
 ├── examples/             # Example scripts
+│   ├── sample.py
 │   ├── create_vm.py
+│   ├── create_vm_with_filesystem_format.py
 │   ├── configure_vm_network.py
 │   ├── load_snapshot.py
+│   ├── init              # Example init that runs MMDS user data
+│   ├── setup.sh          # Host setup for Ubuntu
 │   └── Dockerfile
+├── assets/rootfs/        # setup-firecracker-official.sh (CI kernel + rootfs)
 ├── scripts/              # Utility scripts
-│   └── run-tests-docker.sh
+│   ├── run-tests-docker.sh
+│   └── cleanup_resources.py  # Used by make cleanup-firecracker (destructive)
 ├── pyproject.toml        # Project configuration
 ├── setup.py              # Setup script
 ├── requirements.txt      # Python dependencies
@@ -409,16 +419,22 @@ See [`TODO.md`](TODO.md) for planned features:
 ```python
 from firecracker import MicroVM
 
-# Basic microVM
-vm = MicroVM()
+KERNEL = "./firecracker-files/vmlinux"
+ROOTFS = "./firecracker-files/rootfs.img"
+
+# Basic microVM (kernel_file and base_rootfs are required)
+vm = MicroVM(kernel_file=KERNEL, base_rootfs=ROOTFS)
 vm.create()
 
 # Custom configuration
-vm = MicroVM(vcpu=2, memory="4G")
+vm = MicroVM(kernel_file=KERNEL, base_rootfs=ROOTFS, vcpu=2, memory="4G")
 vm.create()
 
 # With port forwarding
-vm = MicroVM(expose_ports=True, host_port=10222, dest_port=22)
+vm = MicroVM(
+    kernel_file=KERNEL, base_rootfs=ROOTFS,
+    expose_ports=True, host_port=10222, dest_port=22,
+)
 vm.create()
 ```
 
@@ -444,9 +460,9 @@ vm.connect(key_path="/path/to/ssh/key")
 # Create snapshot
 vm.snapshot(action="create")
 
-# Load snapshot
-vm = MicroVM(kernel_file="...", rootfs_path="...")
-vm.create(snapshot=True, memory_path="...", snapshot_path="...")
+# Load snapshot (rootfs_path is a create() argument, not a constructor argument)
+vm = MicroVM(kernel_file="...", base_rootfs="...", ip_addr="<source VM IP>")
+vm.create(snapshot=True, memory_path="...", snapshot_path="...", rootfs_path="...")
 ```
 
 ## Troubleshooting
