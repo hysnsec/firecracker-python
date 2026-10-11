@@ -76,7 +76,7 @@ python3 verify-setup.py
 ```
 
 This will check:
-- Kernel file exists and is executable
+- Kernel file exists and is readable
 - Rootfs image exists and is valid
 - SSH key files exist with correct permissions
 - System prerequisites (Firecracker, KVM, Docker, IP forwarding)

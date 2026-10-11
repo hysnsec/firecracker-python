@@ -82,9 +82,11 @@ sudo iptables -P FORWARD ACCEPT
 
 ### Option A: use the setup script (recommended)
 
-The setup script downloads a kernel and an Ubuntu rootfs from the Firecracker CI bucket. These two are tested together.
+The setup script downloads a kernel and an Ubuntu rootfs from the Firecracker CI bucket. These two are tested together. The script is in the repository, not in the PyPI package, so run it from a clone:
 
 ```bash
+git clone https://github.com/hysnsec/firecracker-python.git
+cd firecracker-python
 ./assets/rootfs/setup-firecracker-official.sh
 ```
 

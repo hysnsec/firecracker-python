@@ -3,13 +3,14 @@
 Simple verification script to check that Firecracker setup is complete.
 
 This script checks for:
-- Kernel file exists and is executable
+- Kernel file exists and is readable
 - Rootfs image exists and is valid
 - SSH key files exist
 - Correct file permissions
 """
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -114,7 +115,7 @@ def check_kernel():
     print("\n🐧 Checking Kernel...")
 
     kernel_path = "firecracker-files/vmlinux"
-    return check_file(kernel_path, "Firecracker Kernel", should_be_executable=True)
+    return check_file(kernel_path, "Firecracker Kernel")
 
 
 def check_rootfs():
@@ -130,8 +131,6 @@ def check_rootfs():
     print(f"✅ Rootfs: Found - {rootfs_path}")
 
     # Check if it's a valid ext4 filesystem
-    import subprocess
-
     try:
         result = subprocess.run(
             ["e2fsck", "-fn", rootfs_path], capture_output=True, text=True
@@ -139,7 +138,7 @@ def check_rootfs():
         if result.returncode == 0:
             print("✅ Rootfs: Valid ext4 filesystem")
         else:
-            print(f"⚠️  Warning: Could not validate ext4 filesystem")
+            print("⚠️  Warning: Could not validate ext4 filesystem")
             print(f"   Output: {result.stderr}")
     except FileNotFoundError:
         print("⚠️  Warning: e2fsck not found (rootfs may still be valid)")
@@ -196,7 +195,6 @@ def check_prerequisites():
             ["docker", "--version"],
             capture_output=True,
             text=True,
-            stderr=subprocess.PIPE,
         )
         if result.returncode == 0:
             print("✅ Docker: Installed")
