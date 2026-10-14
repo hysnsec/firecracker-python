@@ -5,9 +5,138 @@ constructs `firecracker.microvm.MicroVM` — it reads `config.json` files and
 uses `psutil` directly, so read-only commands have no side effects (no
 Docker client, no `ip route` lookups, no CIDR checks, no ID generation).
 
-Currently implemented: `fcpy events` and `fcpy delete`. The rest of the
-commands described in the original CLI proposal (`list`, `inspect`, `logs`,
-`ssh`, `api`, `net`, `doctor`, `prune`) are not yet built.
+Every command resolves `ID` the same way: a full 8-character ID, a VM name,
+or a unique ID prefix. An ambiguous prefix refuses and lists the matches
+instead of guessing.
+
+## `fcpy list`
+
+Lists every VM directory — running, paused, dead, or broken — unlike
+`MicroVM.list()`/`VMMManager.list_vmm()`, which only shows VMs with a live
+process.
+
+```bash
+fcpy list
+fcpy list --json
+```
+
+```
+$ fcpy list
+ID        NAME             STATE    PID     IP           PORTS          CREATED
+a1b2c3d4  brave-turing     running  48213   172.16.0.2   10222->22      2026-09-24 09:12:03
+k9m8n7p6  eager-lovelace   dead     51022   172.16.0.4   10224->22      2026-09-24 10:02:17
+
+2 VMs: 1 running, 1 dead
+Hint: run 'fcpy prune' to remove dead and broken VMs.
+```
+
+## `fcpy inspect`
+
+Shows everything known about one VM: config fields, process info (alive,
+cmdline, uptime, RSS — read via `psutil` directly, never
+`ProcessManager.get_pid()`, which deletes the PID file as a side effect when
+the process is dead), file paths with existence/size, and live data from the
+Firecracker API socket when it responds.
+
+```bash
+fcpy inspect k9m8
+fcpy inspect k9m8 --json
+```
+
+For a dead VM, the Live API section skips straight to
+`Not available: connection refused on socket` without attempting a
+connection — there's nothing listening, so there's no point waiting on a
+timeout.
+
+## `fcpy logs`
+
+Tails the VMM log (Firecracker's own structured log) or, with `--console`,
+the guest serial console (where boot errors appear).
+
+```bash
+fcpy logs k9m8                  # last 10 lines of the VMM log
+fcpy logs k9m8 --console -n 3   # last 3 lines of the guest console
+fcpy logs k9m8 -f                # follow as it grows (Ctrl-C to stop)
+```
+
+## `fcpy ssh`
+
+Execs the real system `ssh` binary against the VM's IP — not the library's
+paramiko-based `MicroVM.connect()` — so you get a genuine TTY, raw terminal
+mode, and signal handling (window resize, Ctrl-C) for free. This replaces
+the `fcpy` process entirely (`os.execvp`), so `fcpy`'s own exit code becomes
+whatever the command exits with.
+
+```bash
+fcpy ssh k9m8                        # interactive shell
+fcpy ssh k9m8 -i ~/.ssh/id_rsa        # with a specific key
+fcpy ssh k9m8 -u admin -- uptime      # one-off command, specific user
+```
+
+## `fcpy api`
+
+Sends a raw request straight to the VM's Firecracker API Unix socket and
+prints the status and body, including error bodies — for poking at the API
+directly without writing a script.
+
+```bash
+fcpy api k9m8 /vm/config
+fcpy api k9m8 /vm -X PATCH -d '{"state":"Paused"}'
+```
+
+## `fcpy net`
+
+Shows TAP device state and the matching nftables NAT/masquerade/port-forward
+rules, for one VM or every known VM.
+
+```bash
+fcpy net k9m8
+fcpy net            # every known VM
+fcpy net --json
+```
+
+Degrades to a plain "nftables: not available" note rather than erroring on a
+host without the nftables module.
+
+## `fcpy doctor`
+
+Checks the host for common setup problems: root, Firecracker binary +
+version, `/dev/kvm` access, IP forwarding, nftables availability, the data
+directory, Docker reachability, dead VM directories, and orphan TAP devices.
+
+```bash
+fcpy doctor
+fcpy doctor --json
+```
+
+```
+$ fcpy doctor
+[ OK ]  Running as root
+[ OK ]  Firecracker binary     /usr/local/bin/firecracker (v1.10.1)
+[ OK ]  KVM                    /dev/kvm read/write
+[FAIL]  IP forwarding          net.ipv4.ip_forward = 0
+          Fix: sudo sysctl -w net.ipv4.ip_forward=1
+[WARN]  Dead VM dirs           2 (k9m8n7p6, q1w2e3r4)
+
+1 failure, 1 warning. Run 'fcpy prune' to clean up.
+```
+
+Exit code is `1` if any check `fail`s, `0` otherwise — warnings alone don't
+fail scripts/CI.
+
+## `fcpy prune`
+
+Removes every dead/broken VM directory and every orphan TAP device (a
+`tap_*` interface whose directory is already gone entirely), after
+confirmation.
+
+```bash
+fcpy prune          # asks "Proceed? [y/N]" first
+fcpy prune -y        # skip confirmation
+```
+
+A VM that's merely paused (present, just not running) is never touched —
+only a tap with *no matching directory at all* counts as orphaned.
 
 ## `fcpy events`
 

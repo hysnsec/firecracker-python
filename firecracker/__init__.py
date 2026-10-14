@@ -1,3 +1,5 @@
+import sys
+
 from .microvm import MicroVM
 from .api import Api
 from .logger import Logger
@@ -7,7 +9,7 @@ try:
     scripts.check_firecracker_binary()
     scripts.create_firecracker_directory()
 except scripts.ConfigurationError as e:
-    print(f"Warning: {e}")
+    print(f"Warning: {e}", file=sys.stderr)
 
 try:
     from ._version import version as __version__

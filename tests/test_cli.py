@@ -9,21 +9,38 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 
 import pytest
 
 from firecracker.cli import (
+    VmIdError,
+    _find_orphan_taps,
+    _follow,
+    _human_size,
+    _tail_lines,
     append_event,
     build_parser,
     cmd_delete,
     diff_scans,
     parse_since,
     read_events,
+    resolve_vm_id,
     scan_vms,
 )
 
 
-def write_config(data_path, vmm_id, name="test-vm", pid=None, running=True, paused=False):
+def write_config(
+    data_path,
+    vmm_id,
+    name="test-vm",
+    pid=None,
+    running=True,
+    paused=False,
+    ports=None,
+    ip_addr="172.16.0.2",
+):
     vmm_dir = os.path.join(data_path, vmm_id)
     os.makedirs(vmm_dir, exist_ok=True)
     config = {
@@ -33,8 +50,8 @@ def write_config(data_path, vmm_id, name="test-vm", pid=None, running=True, paus
         "Rootfs": "/var/lib/firecracker/rootfs.img",
         "Kernel": "/var/lib/firecracker/vmlinux",
         "State": {"Pid": pid, "Running": running, "Paused": paused},
-        "Network": {f"tap_{vmm_id}": {"IPAddress": "172.16.0.2"}},
-        "Ports": {"22": 10222},
+        "Network": {f"tap_{vmm_id}": {"IPAddress": ip_addr}},
+        "Ports": ports if ports is not None else {"22/tcp": [{"HostPort": 10222, "DestPort": 22}]},
         "Labels": {"app": "worker"},
         "LogPath": f"{vmm_dir}/logs",
     }
@@ -56,6 +73,51 @@ def dead_pid():
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     proc.wait()
     return proc.pid
+
+
+class FakeIPRoute:
+    def __init__(self, tap_names):
+        self._tap_names = list(tap_names)
+
+    def get_links(self):
+        return [{"ifname": name} for name in self._tap_names]
+
+
+class FakeNetworkManager:
+    """Stand-in for firecracker.network.NetworkManager, no pyroute2/nftables needed."""
+
+    def __init__(self, tap_names=(), nftables_available=True, nat_rules=None, masquerade_handle=None):
+        self._ipr = FakeIPRoute(tap_names)
+        self._nftables_available = nftables_available
+        self._nat_rules = nat_rules or []
+        self._masquerade_handle = masquerade_handle
+        self.deleted_taps = []
+        self.closed = False
+
+    def is_nftables_available(self):
+        return self._nftables_available
+
+    def get_nat_rules(self):
+        return self._nat_rules
+
+    def get_masquerade_handle(self):
+        return self._masquerade_handle
+
+    def find_tap_interface_rules(self, rules, tap_name):
+        return [r for r in rules if r.get("tap") == tap_name]
+
+    def check_tap_device(self, name):
+        return name in self._ipr._tap_names
+
+    def delete_tap(self, name):
+        self.deleted_taps.append(name)
+
+    def close(self):
+        self.closed = True
+
+
+def _patch_network_manager(monkeypatch, fake_nm):
+    monkeypatch.setattr("firecracker.cli._lazy_network_manager", lambda: (lambda: fake_nm))
 
 
 class TestScanVms:
@@ -331,3 +393,423 @@ class TestCliIntegration:
         out = capsys.readouterr().out
         parsed = json.loads(out)
         assert parsed[0]["id"] == "a1b2c3d4"
+
+
+class TestHelpers:
+    def test_human_size_bytes(self):
+        assert _human_size(500) == "500 B"
+
+    def test_human_size_kb(self):
+        assert _human_size(14540) == "14.2 KB"
+
+    def test_human_size_none(self):
+        assert _human_size(None) == "-"
+
+    def test_find_orphan_taps(self):
+        class FakeIPR:
+            def get_links(self):
+                return [{"ifname": "tap_a1b2c3d4"}, {"ifname": "tap_zzzzzzzz"}, {"ifname": "eth0"}]
+
+        class FakeNM:
+            _ipr = FakeIPR()
+
+        orphans = _find_orphan_taps(FakeNM(), {"a1b2c3d4": {}})
+        assert orphans == ["tap_zzzzzzzz"]
+
+    def test_find_orphan_taps_no_network_manager(self):
+        assert _find_orphan_taps(None, {}) == []
+
+
+class TestResolveVmId:
+    def test_full_id_match(self):
+        vms = {"a1b2c3d4": {"name": "vm1"}, "e5f6g7h8": {"name": "vm2"}}
+        assert resolve_vm_id(vms, "a1b2c3d4") == "a1b2c3d4"
+
+    def test_prefix_match(self):
+        vms = {"a1b2c3d4": {"name": "vm1"}}
+        assert resolve_vm_id(vms, "a1b2") == "a1b2c3d4"
+
+    def test_name_match(self):
+        vms = {"a1b2c3d4": {"name": "eager-lovelace"}}
+        assert resolve_vm_id(vms, "eager-lovelace") == "a1b2c3d4"
+
+    def test_no_match_raises(self):
+        with pytest.raises(VmIdError) as exc:
+            resolve_vm_id({}, "nosuchvm")
+        assert exc.value.code == 1
+        assert "No VM matching" in str(exc.value)
+
+    def test_ambiguous_raises(self):
+        vms = {"aaaa1111": {"name": "vm1"}, "aaaa2222": {"name": "vm2"}}
+        with pytest.raises(VmIdError) as exc:
+            resolve_vm_id(vms, "aaaa")
+        assert "Ambiguous" in str(exc.value)
+
+
+class TestCmdList:
+    def test_list_shows_all_states(self, tmp_path, alive_pid, dead_pid):
+        data_path = str(tmp_path)
+        write_config(data_path, "a1b2c3d4", name="running-vm", pid=alive_pid, running=True)
+        write_config(data_path, "b2c3d4e5", name="dead-vm", pid=dead_pid, running=True)
+        (tmp_path / "c3d4e5f6").mkdir()  # broken: no config.json
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "list"])
+        rc = args.func(args)
+
+        assert rc == 0
+
+    def test_list_json_output(self, tmp_path, alive_pid, capsys):
+        data_path = str(tmp_path)
+        write_config(data_path, "a1b2c3d4", pid=alive_pid)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "list", "--json"])
+        args.func(args)
+
+        parsed = json.loads(capsys.readouterr().out)
+        assert parsed[0]["id"] == "a1b2c3d4"
+
+    def test_list_empty(self, tmp_path, capsys):
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", str(tmp_path), "list"])
+        rc = args.func(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "No VMs found" in out
+
+
+class TestCmdInspect:
+    def test_inspect_dead_vm(self, tmp_path, dead_pid, capsys):
+        data_path = str(tmp_path)
+        write_config(data_path, "c3d4e5f6", name="eager-lovelace", pid=dead_pid, running=True)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "inspect", "c3d4e5f6"])
+        rc = args.func(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "not running" in out
+        assert "Not available: connection refused on socket" in out
+
+    def test_inspect_json_structure(self, tmp_path, dead_pid, capsys):
+        data_path = str(tmp_path)
+        write_config(data_path, "c3d4e5f6", pid=dead_pid)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "inspect", "c3d4e5f6", "--json"])
+        args.func(args)
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["id"] == "c3d4e5f6"
+        assert data["process"]["running"] is False
+        assert data["live_api_error"] == "connection refused on socket"
+        assert data["files"]["vmm_log"]["exists"] is False
+
+    def test_inspect_live_process_unreachable_socket(self, tmp_path, alive_pid, capsys):
+        data_path = str(tmp_path)
+        vmm_dir = write_config(data_path, "a1b2c3d4", pid=alive_pid, running=True)
+        # Socket file exists but nothing is listening on it -> a real connection failure,
+        # exercising the APIError path without needing a working Firecracker socket server.
+        open(os.path.join(vmm_dir, "firecracker.socket"), "w").close()
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "inspect", "a1b2c3d4", "--json"])
+        args.func(args)
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["process"]["running"] is True
+        assert data["live_api"] is None
+        assert data["live_api_error"] is not None
+
+    def test_inspect_unknown_id(self, tmp_path):
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", str(tmp_path), "inspect", "nosuchvm"])
+        rc = args.func(args)
+        assert rc == 1
+
+
+class TestCmdLogs:
+    def test_tail_lines_returns_last_n(self, tmp_path):
+        path = tmp_path / "test.log"
+        path.write_text("\n".join(f"line{i}" for i in range(20)) + "\n")
+
+        lines = _tail_lines(str(path), 3)
+
+        assert len(lines) == 3
+        assert lines[-1].strip() == "line19"
+
+    def test_logs_vmm_log(self, tmp_path, dead_pid, capsys):
+        data_path = str(tmp_path)
+        vmm_dir = write_config(data_path, "a1b2c3d4", pid=dead_pid)
+        os.makedirs(os.path.join(vmm_dir, "logs"), exist_ok=True)
+        with open(os.path.join(vmm_dir, "logs", "a1b2c3d4.log"), "w") as f:
+            f.write("line1\nline2\n")
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "logs", "a1b2c3d4"])
+        rc = args.func(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "line1" in out and "line2" in out
+
+    def test_logs_console(self, tmp_path, dead_pid, capsys):
+        data_path = str(tmp_path)
+        vmm_dir = write_config(data_path, "a1b2c3d4", pid=dead_pid)
+        with open(os.path.join(vmm_dir, "firecracker.log"), "w") as f:
+            f.write("boot message\n")
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "logs", "a1b2c3d4", "--console"])
+        rc = args.func(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "boot message" in out
+
+    def test_logs_missing_file(self, tmp_path, dead_pid):
+        data_path = str(tmp_path)
+        write_config(data_path, "a1b2c3d4", pid=dead_pid)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "logs", "a1b2c3d4"])
+        rc = args.func(args)
+
+        assert rc == 1
+
+    def test_follow_picks_up_new_lines(self, tmp_path, capsys):
+        path = tmp_path / "live.log"
+        path.write_text("")
+
+        thread = threading.Thread(target=_follow, args=(str(path),), daemon=True)
+        thread.start()
+        time.sleep(0.2)
+
+        with open(path, "a") as f:
+            f.write("new line\n")
+
+        time.sleep(1.0)
+        out = capsys.readouterr().out
+        assert "new line" in out
+
+
+class TestCmdSsh:
+    def test_ssh_unknown_id(self, tmp_path):
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", str(tmp_path), "ssh", "nosuchvm"])
+        rc = args.func(args)
+        assert rc == 1
+
+    def test_ssh_no_ip(self, tmp_path, dead_pid):
+        data_path = str(tmp_path)
+        write_config(data_path, "a1b2c3d4", pid=dead_pid, ip_addr=None)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "ssh", "a1b2c3d4"])
+        rc = args.func(args)
+
+        assert rc == 1
+
+    def test_ssh_execs_with_correct_argv(self, tmp_path, dead_pid, monkeypatch):
+        data_path = str(tmp_path)
+        write_config(data_path, "a1b2c3d4", pid=dead_pid, ip_addr="172.16.0.5")
+
+        captured = {}
+        monkeypatch.setattr(
+            "firecracker.cli.os.execvp",
+            lambda file, argv: captured.update(file=file, argv=argv),
+        )
+
+        parser = build_parser()
+        args = parser.parse_args(
+            ["--data-path", data_path, "ssh", "a1b2c3d4", "-i", "key.pem", "-u", "admin"]
+        )
+        args.func(args)
+
+        assert captured["file"] == "ssh"
+        assert "-i" in captured["argv"] and "key.pem" in captured["argv"]
+        assert "172.16.0.5" in captured["argv"]
+        assert "-l" in captured["argv"] and "admin" in captured["argv"]
+
+    def test_ssh_with_trailing_command(self, tmp_path, dead_pid, monkeypatch):
+        data_path = str(tmp_path)
+        write_config(data_path, "a1b2c3d4", pid=dead_pid, ip_addr="172.16.0.5")
+
+        captured = {}
+        monkeypatch.setattr(
+            "firecracker.cli.os.execvp",
+            lambda file, argv: captured.update(file=file, argv=argv),
+        )
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "ssh", "a1b2c3d4", "--", "ls", "-la"])
+        args.func(args)
+
+        assert captured["argv"][-2:] == ["ls", "-la"]
+
+
+class TestCmdApi:
+    def test_api_unknown_id(self, tmp_path):
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", str(tmp_path), "api", "nosuchvm", "/"])
+        rc = args.func(args)
+        assert rc == 1
+
+    def test_api_missing_socket(self, tmp_path, dead_pid):
+        data_path = str(tmp_path)
+        write_config(data_path, "a1b2c3d4", pid=dead_pid)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "api", "a1b2c3d4", "/"])
+        rc = args.func(args)
+
+        assert rc == 1
+
+    def test_api_invalid_json_body(self, tmp_path, dead_pid):
+        data_path = str(tmp_path)
+        vmm_dir = write_config(data_path, "a1b2c3d4", pid=dead_pid)
+        open(os.path.join(vmm_dir, "firecracker.socket"), "w").close()
+
+        parser = build_parser()
+        args = parser.parse_args(
+            ["--data-path", data_path, "api", "a1b2c3d4", "/", "-d", "not json"]
+        )
+        rc = args.func(args)
+
+        assert rc == 1
+
+
+class TestCmdNet:
+    def test_net_for_one_vm(self, tmp_path, dead_pid, monkeypatch, capsys):
+        data_path = str(tmp_path)
+        write_config(data_path, "a1b2c3d4", pid=dead_pid)
+
+        fake_nm = FakeNetworkManager(tap_names=["tap_a1b2c3d4"], masquerade_handle=42)
+        _patch_network_manager(monkeypatch, fake_nm)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "net", "a1b2c3d4"])
+        rc = args.func(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "tap_a1b2c3d4" in out
+        assert "up" in out
+        assert fake_nm.closed is True
+
+    def test_net_json(self, tmp_path, dead_pid, monkeypatch, capsys):
+        data_path = str(tmp_path)
+        write_config(data_path, "a1b2c3d4", pid=dead_pid)
+        fake_nm = FakeNetworkManager(tap_names=[])
+        _patch_network_manager(monkeypatch, fake_nm)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "net", "a1b2c3d4", "--json"])
+        args.func(args)
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["interfaces"][0]["tap_exists"] is False
+
+    def test_net_unknown_id(self, tmp_path, monkeypatch):
+        fake_nm = FakeNetworkManager(tap_names=[])
+        _patch_network_manager(monkeypatch, fake_nm)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", str(tmp_path), "net", "nosuchvm"])
+        rc = args.func(args)
+
+        assert rc == 1
+
+
+class TestCmdDoctor:
+    def test_doctor_runs_all_checks(self, tmp_path, monkeypatch, capsys):
+        fake_nm = FakeNetworkManager(tap_names=[])
+        _patch_network_manager(monkeypatch, fake_nm)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", str(tmp_path), "doctor"])
+        rc = args.func(args)
+
+        out = capsys.readouterr().out
+        assert rc in (0, 1)
+        assert "Firecracker binary" in out
+        assert "KVM" in out
+        assert fake_nm.closed is True
+
+    def test_doctor_json(self, tmp_path, monkeypatch, capsys):
+        fake_nm = FakeNetworkManager(tap_names=[])
+        _patch_network_manager(monkeypatch, fake_nm)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", str(tmp_path), "doctor", "--json"])
+        args.func(args)
+
+        checks = json.loads(capsys.readouterr().out)
+        labels = [c["label"] for c in checks]
+        assert "KVM" in labels
+        assert "Orphan TAP devices" in labels
+
+
+class TestCmdPrune:
+    def test_nothing_to_prune(self, tmp_path, alive_pid, monkeypatch, capsys):
+        data_path = str(tmp_path)
+        write_config(data_path, "a1b2c3d4", pid=alive_pid, running=True)
+        fake_nm = FakeNetworkManager(tap_names=["tap_a1b2c3d4"])
+        _patch_network_manager(monkeypatch, fake_nm)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "prune", "-y"])
+        rc = args.func(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Nothing to prune" in out
+        assert fake_nm.deleted_taps == []
+
+    def test_prune_removes_dead_vm_dir(self, tmp_path, dead_pid, monkeypatch):
+        data_path = str(tmp_path)
+        write_config(data_path, "c3d4e5f6", pid=dead_pid, running=True)
+        fake_nm = FakeNetworkManager(tap_names=["tap_c3d4e5f6"])
+        _patch_network_manager(monkeypatch, fake_nm)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "prune", "-y"])
+        rc = args.func(args)
+
+        assert rc == 0
+        assert not os.path.exists(os.path.join(data_path, "c3d4e5f6"))
+
+    def test_prune_does_not_touch_paused_vm_tap(self, tmp_path, alive_pid, monkeypatch):
+        """The one real correctness trap: a present-but-paused VM's tap must
+        NOT be swept up as an 'orphan' just because it isn't running."""
+        data_path = str(tmp_path)
+        write_config(data_path, "paused01", pid=alive_pid, running=True, paused=True)
+
+        fake_nm = FakeNetworkManager(tap_names=["tap_paused01", "tap_zzzzzzzz"])
+        _patch_network_manager(monkeypatch, fake_nm)
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "prune", "-y"])
+        rc = args.func(args)
+
+        assert rc == 0
+        assert "tap_paused01" not in fake_nm.deleted_taps
+        assert "tap_zzzzzzzz" in fake_nm.deleted_taps
+        assert os.path.exists(os.path.join(data_path, "paused01"))
+
+    def test_prune_confirmation_prompt_abort(self, tmp_path, dead_pid, monkeypatch):
+        data_path = str(tmp_path)
+        write_config(data_path, "c3d4e5f6", pid=dead_pid, running=True)
+        fake_nm = FakeNetworkManager(tap_names=[])
+        _patch_network_manager(monkeypatch, fake_nm)
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+
+        parser = build_parser()
+        args = parser.parse_args(["--data-path", data_path, "prune"])
+        rc = args.func(args)
+
+        assert rc == 1
+        assert os.path.exists(os.path.join(data_path, "c3d4e5f6"))
