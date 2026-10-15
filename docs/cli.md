@@ -5,6 +5,42 @@ constructs `firecracker.microvm.MicroVM` — it reads `config.json` files and
 uses `psutil` directly, so read-only commands have no side effects (no
 Docker client, no `ip route` lookups, no CIDR checks, no ID generation).
 
+## Install
+
+`fcpy` isn't published to PyPI separately — it's registered as a console
+script (`[project.scripts]` in `pyproject.toml`) that comes with installing
+this package. The recommended way is [`pipx`](https://pipx.pypa.io/), which
+installs it into its own isolated environment but makes the `fcpy` command
+available globally, without needing to activate any virtualenv.
+
+If `pipx` itself isn't installed yet (Debian/Ubuntu):
+
+```bash
+sudo apt update
+sudo apt install -y python3-venv python3-pip pipx
+pipx ensurepath
+# then reopen your shell
+```
+
+Then, from the repo root:
+
+```bash
+pipx install -e .
+fcpy --help
+```
+
+If `fcpy` isn't found right after installing, `~/.local/bin` probably isn't
+on your `$PATH` yet:
+
+```bash
+pipx ensurepath
+# then reopen your shell
+```
+
+Alternatively, inside any virtualenv for this project (`pip install -e .` or
+`uv sync --dev`), `fcpy` is available the same way once the environment is
+activated — `pipx` just avoids the activation step.
+
 Every command resolves `ID` the same way: a full 8-character ID, a VM name,
 or a unique ID prefix. An ambiguous prefix refuses and lists the matches
 instead of guessing.
