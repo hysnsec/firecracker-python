@@ -61,11 +61,25 @@ def write_config(
 
 
 @pytest.fixture
-def alive_pid():
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    yield proc.pid
-    proc.kill()
-    proc.wait()
+def alive_pid_for():
+    """Factory fixture: alive_pid_for("vmm_id") spawns a process whose cmdline
+    includes "--id <vmm_id>", matching how process.py actually invokes
+    Firecracker, so _is_vm_process() correctly treats it as that VM's own
+    process rather than just an arbitrary alive PID."""
+    procs = []
+
+    def _spawn(vmm_id):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)", "--id", vmm_id]
+        )
+        procs.append(proc)
+        return proc.pid
+
+    yield _spawn
+
+    for proc in procs:
+        proc.kill()
+        proc.wait()
 
 
 @pytest.fixture
@@ -86,12 +100,24 @@ class FakeIPRoute:
 class FakeNetworkManager:
     """Stand-in for firecracker.network.NetworkManager, no pyroute2/nftables needed."""
 
-    def __init__(self, tap_names=(), nftables_available=True, nat_rules=None, masquerade_handle=None):
+    def __init__(
+        self,
+        tap_names=(),
+        nftables_available=True,
+        nat_rules=None,
+        masquerade_handle=None,
+        fail_steps=(),
+    ):
         self._ipr = FakeIPRoute(tap_names)
         self._nftables_available = nftables_available
         self._nat_rules = nat_rules or []
         self._masquerade_handle = masquerade_handle
+        self._fail_steps = set(fail_steps)
         self.deleted_taps = []
+        self.deleted_nat_rules_for = []
+        self.deleted_port_forwards_for = []
+        self.masquerade_deleted = False
+        self.cleanup_called_with = []
         self.closed = False
 
     def is_nftables_available(self):
@@ -110,7 +136,25 @@ class FakeNetworkManager:
         return name in self._ipr._tap_names
 
     def delete_tap(self, name):
+        if "delete_tap" in self._fail_steps:
+            raise Exception("simulated delete_tap failure")
         self.deleted_taps.append(name)
+
+    def delete_nat_rules(self, tap_name):
+        if "delete_nat_rules" in self._fail_steps:
+            raise Exception("simulated delete_nat_rules failure")
+        self.deleted_nat_rules_for.append(tap_name)
+
+    def delete_all_port_forward(self, vmm_id):
+        if "delete_all_port_forward" in self._fail_steps:
+            raise Exception("simulated delete_all_port_forward failure")
+        self.deleted_port_forwards_for.append(vmm_id)
+
+    def delete_masquerade(self):
+        self.masquerade_deleted = True
+
+    def cleanup(self, tap_device):
+        self.cleanup_called_with.append(tap_device)
 
     def close(self):
         self.closed = True
@@ -121,8 +165,10 @@ def _patch_network_manager(monkeypatch, fake_nm):
 
 
 class TestScanVms:
-    def test_running_vm(self, tmp_path, alive_pid):
-        write_config(str(tmp_path), "a1b2c3d4", pid=alive_pid, running=True, paused=False)
+    def test_running_vm(self, tmp_path, alive_pid_for):
+        write_config(
+            str(tmp_path), "a1b2c3d4", pid=alive_pid_for("a1b2c3d4"), running=True, paused=False
+        )
 
         vms = scan_vms(str(tmp_path))
 
@@ -130,12 +176,29 @@ class TestScanVms:
         assert vms["a1b2c3d4"]["name"] == "test-vm"
         assert vms["a1b2c3d4"]["ip_addr"] == "172.16.0.2"
 
-    def test_paused_vm(self, tmp_path, alive_pid):
-        write_config(str(tmp_path), "b2c3d4e5", pid=alive_pid, running=True, paused=True)
+    def test_paused_vm(self, tmp_path, alive_pid_for):
+        write_config(
+            str(tmp_path), "b2c3d4e5", pid=alive_pid_for("b2c3d4e5"), running=True, paused=True
+        )
 
         vms = scan_vms(str(tmp_path))
 
         assert vms["b2c3d4e5"]["state"] == "paused"
+
+    def test_does_not_trust_a_recycled_pid(self, tmp_path):
+        """A PID match alone isn't enough: Linux can hand a dead VM's PID to
+        an unrelated process (e.g. after a reboot). Without checking the
+        process's own --id, this would misreport it as running."""
+        proc = subprocess.Popen(["sleep", "30"])
+        try:
+            write_config(str(tmp_path), "a1b2c3d4", pid=proc.pid, running=True)
+
+            vms = scan_vms(str(tmp_path))
+
+            assert vms["a1b2c3d4"]["state"] == "dead"
+        finally:
+            proc.kill()
+            proc.wait()
 
     def test_dead_vm(self, tmp_path, dead_pid):
         write_config(str(tmp_path), "c3d4e5f6", pid=dead_pid, running=True, paused=False)
@@ -346,13 +409,19 @@ class TestCmdDelete:
         assert os.path.exists(os.path.join(data_path, "aaaa1111"))
         assert os.path.exists(os.path.join(data_path, "aaaa2222"))
 
-    def test_kills_live_process_on_delete(self, tmp_path):
+    def test_kills_live_process_on_delete(self, tmp_path, monkeypatch):
         import psutil
 
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        # Trailing argv mimics how process.py actually invokes Firecracker
+        # (--id <vmm_id>), which is what _is_vm_process checks for before
+        # trusting a PID enough to kill it.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)", "--id", "c3d4e5f6"]
+        )
         try:
             data_path = str(tmp_path)
             write_config(data_path, "c3d4e5f6", pid=proc.pid)
+            _patch_network_manager(monkeypatch, FakeNetworkManager())
 
             args = self._make_args(data_path, "c3d4e5f6")
             cmd_delete(args)
@@ -366,6 +435,65 @@ class TestCmdDelete:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+    def test_delete_does_not_kill_a_process_with_a_recycled_pid(self, tmp_path, monkeypatch):
+        """A bare PID match is not enough: Linux can recycle a dead VM's PID
+        onto an unrelated process. delete must only kill it if the process's
+        own cmdline proves it's actually this VM's Firecracker instance."""
+        proc = subprocess.Popen(["sleep", "30"])
+        try:
+            data_path = str(tmp_path)
+            write_config(data_path, "a1b2c3d4", pid=proc.pid)
+            _patch_network_manager(monkeypatch, FakeNetworkManager())
+
+            args = self._make_args(data_path, "a1b2c3d4")
+            rc = cmd_delete(args)
+
+            assert rc == 0
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_delete_cleans_up_nat_and_port_forward_rules_not_just_tap(
+        self, tmp_path, dead_pid, monkeypatch
+    ):
+        data_path = str(tmp_path)
+        write_config(data_path, "a1b2c3d4", pid=dead_pid)
+        fake_nm = FakeNetworkManager(tap_names=["tap_a1b2c3d4"])
+        _patch_network_manager(monkeypatch, fake_nm)
+
+        args = self._make_args(data_path, "a1b2c3d4")
+        rc = cmd_delete(args)
+
+        assert rc == 0
+        assert fake_nm.deleted_nat_rules_for == ["tap_a1b2c3d4"]
+        assert fake_nm.deleted_port_forwards_for == ["a1b2c3d4"]
+        assert fake_nm.deleted_taps == ["tap_a1b2c3d4"]
+        # NetworkManager.cleanup()/delete_masquerade() must never be used here:
+        # delete_masquerade() removes the one shared rule every other running
+        # VM's outbound traffic depends on.
+        assert fake_nm.masquerade_deleted is False
+        assert fake_nm.cleanup_called_with == []
+        assert fake_nm.closed is True
+
+    def test_delete_network_cleanup_continues_after_a_step_fails_and_warns(
+        self, tmp_path, dead_pid, monkeypatch, capsys
+    ):
+        data_path = str(tmp_path)
+        write_config(data_path, "a1b2c3d4", pid=dead_pid)
+        fake_nm = FakeNetworkManager(tap_names=["tap_a1b2c3d4"], fail_steps={"delete_nat_rules"})
+        _patch_network_manager(monkeypatch, fake_nm)
+
+        args = self._make_args(data_path, "a1b2c3d4")
+        rc = cmd_delete(args)
+
+        err = capsys.readouterr().err
+        assert rc == 0
+        # Later steps still ran despite the earlier one failing.
+        assert fake_nm.deleted_port_forwards_for == ["a1b2c3d4"]
+        assert fake_nm.deleted_taps == ["tap_a1b2c3d4"]
+        assert "network cleanup for a1b2c3d4 was incomplete" in err
 
 
 class TestCliIntegration:
@@ -447,9 +575,11 @@ class TestResolveVmId:
 
 
 class TestCmdList:
-    def test_list_shows_all_states(self, tmp_path, alive_pid, dead_pid):
+    def test_list_shows_all_states(self, tmp_path, alive_pid_for, dead_pid):
         data_path = str(tmp_path)
-        write_config(data_path, "a1b2c3d4", name="running-vm", pid=alive_pid, running=True)
+        write_config(
+            data_path, "a1b2c3d4", name="running-vm", pid=alive_pid_for("a1b2c3d4"), running=True
+        )
         write_config(data_path, "b2c3d4e5", name="dead-vm", pid=dead_pid, running=True)
         (tmp_path / "c3d4e5f6").mkdir()  # broken: no config.json
 
@@ -459,9 +589,9 @@ class TestCmdList:
 
         assert rc == 0
 
-    def test_list_json_output(self, tmp_path, alive_pid, capsys):
+    def test_list_json_output(self, tmp_path, alive_pid_for, capsys):
         data_path = str(tmp_path)
-        write_config(data_path, "a1b2c3d4", pid=alive_pid)
+        write_config(data_path, "a1b2c3d4", pid=alive_pid_for("a1b2c3d4"))
 
         parser = build_parser()
         args = parser.parse_args(["--data-path", data_path, "list", "--json"])
@@ -508,9 +638,9 @@ class TestCmdInspect:
         assert data["live_api_error"] == "connection refused on socket"
         assert data["files"]["vmm_log"]["exists"] is False
 
-    def test_inspect_live_process_unreachable_socket(self, tmp_path, alive_pid, capsys):
+    def test_inspect_live_process_unreachable_socket(self, tmp_path, alive_pid_for, capsys):
         data_path = str(tmp_path)
-        vmm_dir = write_config(data_path, "a1b2c3d4", pid=alive_pid, running=True)
+        vmm_dir = write_config(data_path, "a1b2c3d4", pid=alive_pid_for("a1b2c3d4"), running=True)
         # Socket file exists but nothing is listening on it -> a real connection failure,
         # exercising the APIError path without needing a working Firecracker socket server.
         open(os.path.join(vmm_dir, "firecracker.socket"), "w").close()
@@ -754,9 +884,9 @@ class TestCmdDoctor:
 
 
 class TestCmdPrune:
-    def test_nothing_to_prune(self, tmp_path, alive_pid, monkeypatch, capsys):
+    def test_nothing_to_prune(self, tmp_path, alive_pid_for, monkeypatch, capsys):
         data_path = str(tmp_path)
-        write_config(data_path, "a1b2c3d4", pid=alive_pid, running=True)
+        write_config(data_path, "a1b2c3d4", pid=alive_pid_for("a1b2c3d4"), running=True)
         fake_nm = FakeNetworkManager(tap_names=["tap_a1b2c3d4"])
         _patch_network_manager(monkeypatch, fake_nm)
 
@@ -782,11 +912,11 @@ class TestCmdPrune:
         assert rc == 0
         assert not os.path.exists(os.path.join(data_path, "c3d4e5f6"))
 
-    def test_prune_does_not_touch_paused_vm_tap(self, tmp_path, alive_pid, monkeypatch):
+    def test_prune_does_not_touch_paused_vm_tap(self, tmp_path, alive_pid_for, monkeypatch):
         """The one real correctness trap: a present-but-paused VM's tap must
         NOT be swept up as an 'orphan' just because it isn't running."""
         data_path = str(tmp_path)
-        write_config(data_path, "paused01", pid=alive_pid, running=True, paused=True)
+        write_config(data_path, "paused01", pid=alive_pid_for("paused01"), running=True, paused=True)
 
         fake_nm = FakeNetworkManager(tap_names=["tap_paused01", "tap_zzzzzzzz"])
         _patch_network_manager(monkeypatch, fake_nm)

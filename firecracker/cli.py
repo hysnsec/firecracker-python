@@ -79,6 +79,26 @@ def resolve_vm_id(vms: dict, query: str) -> str:
     return matches[0]
 
 
+def _is_vm_process(pid, vmm_id: str) -> bool:
+    """Return True only if pid is the Firecracker process for vmm_id.
+
+    A PID alone isn't enough: Linux recycles PIDs, so after a reboot or a
+    crash the same number can belong to an unrelated process (PID 1 is
+    always "alive," for instance). process.py always starts Firecracker
+    with `--id <vmm_id>`, so checking that flag in the process's own
+    cmdline is what actually proves it's this VM's process before we trust
+    it enough to kill it.
+    """
+    try:
+        cmdline = psutil.Process(int(pid)).cmdline()
+    except (TypeError, ValueError, psutil.Error):
+        return False
+    return any(
+        arg == "--id" and i + 1 < len(cmdline) and cmdline[i + 1] == vmm_id
+        for i, arg in enumerate(cmdline)
+    )
+
+
 def scan_vms(data_path: str) -> dict:
     """Scan data_path for every VM directory and classify its current state.
 
@@ -135,12 +155,7 @@ def scan_vms(data_path: str) -> dict:
         running_flag = bool(state_block.get("Running", False))
         paused_flag = bool(state_block.get("Paused", False))
 
-        alive = False
-        if pid:
-            try:
-                alive = psutil.pid_exists(int(pid))
-            except (TypeError, ValueError):
-                alive = False
+        alive = bool(pid) and _is_vm_process(pid, vmm_id)
 
         if not alive:
             state = "dead"
@@ -342,28 +357,46 @@ def cmd_events(args) -> int:
 
 def _delete_vm_dir(data_path: str, vmm_id: str, vm: dict, network_manager=None) -> None:
     """Shared body for cmd_delete and cmd_prune: log the deletion, kill the
-    process if alive, best-effort remove the TAP device, and remove the dir."""
+    process if it's actually this VM's (never trust a bare PID - it can have
+    been recycled by an unrelated process), clean up every network resource
+    this VM owns, and remove the directory."""
     vmm_path = os.path.join(data_path, vmm_id)
 
     append_event(data_path, _event(vm, "deleted", reason="manual"))
 
     pid = vm.get("pid")
-    if pid:
+    if pid and _is_vm_process(pid, vmm_id):
         try:
-            if psutil.pid_exists(int(pid)):
-                psutil.Process(int(pid)).kill()
+            psutil.Process(int(pid)).kill()
         except (TypeError, ValueError, psutil.Error):
             pass
 
-    try:
-        if network_manager is not None:
-            network_manager.delete_tap(f"tap_{vmm_id}")
-        else:
-            network_manager_cls = _lazy_network_manager()
-            if network_manager_cls is not None:
-                network_manager_cls().delete_tap(f"tap_{vmm_id}")
-    except Exception:
-        pass
+    nm = network_manager or _try_network_manager()
+    tap_name = f"tap_{vmm_id}"
+    errors = []
+    if nm is None:
+        errors.append("NetworkManager unavailable")
+    else:
+        # Deliberately NOT NetworkManager.cleanup(): it also calls
+        # delete_masquerade(), which removes the one shared masquerade rule
+        # every other running VM's outbound traffic depends on.
+        for step in (
+            lambda: nm.delete_nat_rules(tap_name),
+            lambda: nm.delete_all_port_forward(vmm_id),
+            lambda: nm.delete_tap(tap_name),
+        ):
+            try:
+                step()
+            except Exception as e:
+                errors.append(str(e))
+        if network_manager is None:
+            nm.close()
+
+    if errors:
+        print(
+            f"Warning: network cleanup for {vmm_id} was incomplete: {'; '.join(errors)}",
+            file=sys.stderr,
+        )
 
     shutil.rmtree(vmm_path, ignore_errors=True)
 
@@ -487,7 +520,7 @@ def cmd_inspect(args) -> int:
     if pid:
         try:
             pid_int = int(pid)
-            if psutil.pid_exists(pid_int):
+            if _is_vm_process(pid_int, vmm_id):
                 proc = psutil.Process(pid_int)
                 process_info = {
                     "pid": pid_int,
