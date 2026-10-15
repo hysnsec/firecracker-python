@@ -18,6 +18,7 @@ setup(
     entry_points={
         'console_scripts': [
             'firecracker-check=firecracker.scripts:check_firecracker_binary',
+            'fcpy=firecracker.cli:main',
         ],
     },
     classifiers=[
